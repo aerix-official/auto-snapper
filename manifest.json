@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Auto Snapper",
+  "short_name": "Auto Snapper",
+  "version": "1.0.0",
+  "author": "Bryce Joseph",
+  "description": "Auto Snapper by Bryce Joseph — automates sending and opening snaps on web.snapchat.com. Pulls friend lists with avatars and streak counts, lets you save recipient configs, and runs the full camera → capture → pick → send (or chat → view → close) loop. Includes an in-page floating control panel.",
+  "permissions": ["storage", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://web.snapchat.com/*",
+    "https://www.snapchat.com/web/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Auto Snapper",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://web.snapchat.com/*",
+        "https://www.snapchat.com/web/*"
+      ],
+      "js": ["selectors.js", "content.js", "overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

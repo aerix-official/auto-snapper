@@ -1,0 +1,20 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build / packaging
+*.zip
+*.crx
+*.pem
+
+# Logs / dumps generated during development
+*.log
+diagnostics-output-*.json

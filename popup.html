@@ -1,0 +1,776 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Auto Snapper</title>
+    <style>
+      :root {
+        --bg-0: #0a0a0c;
+        --bg-1: #111114;
+        --bg-2: #16161b;
+        --bg-3: #1e1e25;
+        --bg-hover: #25252e;
+        --bg-glass: rgba(28, 28, 35, 0.85);
+        --fg: #f6f6f8;
+        --fg-2: #d6d7dd;
+        --muted: #8a8b94;
+        --muted-2: #5b5c64;
+        --border: #25252d;
+        --border-strong: #353541;
+        --accent: #fffc00;
+        --accent-2: #ffe600;
+        --accent-fg: #0a0a0c;
+        --accent-soft: rgba(255, 252, 0, 0.18);
+        --danger: #ff4d6d;
+        --success: #2ee59d;
+        --info: #5b8cff;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+        --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.5);
+        --shadow-yellow: 0 4px 22px rgba(255, 252, 0, 0.22);
+        --shadow-glow: 0 0 0 3px rgba(255, 252, 0, 0.2);
+        --radius-sm: 7px;
+        --radius-md: 12px;
+        --radius-lg: 16px;
+        --radius-xl: 20px;
+        --t-fast: 110ms ease;
+        --t-med: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      * { box-sizing: border-box; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; transition: var(--t-fast); }
+      ::-webkit-scrollbar-thumb:hover { background: #4a4a55; }
+
+      body {
+        margin: 0;
+        width: 410px;
+        max-height: 660px;
+        background:
+          radial-gradient(120% 80% at 100% 0%, rgba(255, 252, 0, 0.05), transparent 60%),
+          radial-gradient(80% 60% at 0% 100%, rgba(91, 140, 255, 0.04), transparent 60%),
+          var(--bg-0);
+        color: var(--fg);
+        font: 13px/1.5 -apple-system, "SF Pro Text", "Segoe UI", Roboto, Inter, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ---------------- Header ---------------- */
+      header {
+        position: relative;
+        padding: 16px 18px;
+        background:
+          linear-gradient(180deg, rgba(255, 252, 0, 0.04), transparent 70%),
+          linear-gradient(180deg, var(--bg-1), var(--bg-0));
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      header::after {
+        content: "";
+        position: absolute;
+        left: 0; right: 0; bottom: -1px;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255, 252, 0, 0.18), transparent);
+        pointer-events: none;
+      }
+      .logo {
+        width: 34px; height: 34px;
+        border-radius: 10px;
+        background: linear-gradient(140deg, var(--accent), #ffd400);
+        color: var(--accent-fg);
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: var(--shadow-yellow), inset 0 -2px 0 rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.4);
+      }
+      .logo svg { width: 22px; height: 22px; display: block; }
+      header .titles { flex: 1; min-width: 0; line-height: 1.15; }
+      header h1 {
+        font-size: 14px; font-weight: 800; margin: 0;
+        letter-spacing: -0.01em;
+      }
+      header .subtitle {
+        font-size: 10.5px; color: var(--muted);
+        font-weight: 500;
+        letter-spacing: 0.02em;
+      }
+      .pill {
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        background: var(--bg-3);
+        color: var(--muted);
+        border: 1px solid var(--border);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .pill::before {
+        content: "";
+        width: 6px; height: 6px; border-radius: 50%;
+        background: var(--muted-2);
+        transition: var(--t-fast);
+      }
+      .pill.connected { color: var(--fg-2); border-color: var(--border-strong); }
+      .pill.connected::before { background: var(--success); box-shadow: 0 0 6px var(--success); }
+      .pill.running {
+        color: var(--accent-fg); background: var(--accent); border-color: var(--accent);
+        box-shadow: var(--shadow-yellow);
+      }
+      .pill.running::before {
+        background: var(--accent-fg);
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.5); opacity: 0.5; }
+      }
+
+      /* ---------------- Stale banner ---------------- */
+      #stale-banner {
+        display: none;
+        padding: 9px 16px;
+        background: linear-gradient(180deg, rgba(255, 252, 0, 0.12), rgba(255, 252, 0, 0.04));
+        color: #ffeea0;
+        font-size: 11.5px;
+        border-bottom: 1px solid rgba(255, 252, 0, 0.2);
+      }
+
+      /* ---------------- Tabs ---------------- */
+      .tabs {
+        display: flex;
+        background: var(--bg-1);
+        border-bottom: 1px solid var(--border);
+      }
+      .tabs button {
+        flex: 1;
+        padding: 12px 8px;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        position: relative;
+        transition: color var(--t-fast);
+      }
+      .tabs button:hover { color: var(--fg-2); }
+      .tabs button.active { color: var(--accent); }
+      .tabs button.active::after {
+        content: "";
+        position: absolute; left: 50%; bottom: -1px; transform: translateX(-50%);
+        width: 32px; height: 2px;
+        background: var(--accent);
+        border-radius: 2px 2px 0 0;
+        box-shadow: 0 0 8px var(--accent);
+      }
+
+      /* ---------------- Panels ---------------- */
+      .panel { padding: 16px 18px; display: none; }
+      .panel.active { display: block; animation: fadeIn 200ms ease; }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(4px); }
+        to   { opacity: 1; transform: none; }
+      }
+
+      label.field-label {
+        display: block;
+        font-size: 10px;
+        color: var(--muted);
+        margin: 14px 0 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 800;
+      }
+      label.field-label:first-child { margin-top: 0; }
+
+      input, select, textarea {
+        width: 100%;
+        padding: 9px 11px;
+        background: var(--bg-1);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        font: inherit;
+        font-size: 12.5px;
+        transition: border-color var(--t-fast), box-shadow var(--t-fast), background var(--t-fast);
+      }
+      input::placeholder, textarea::placeholder { color: var(--muted-2); }
+      input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
+      input:focus, select:focus, textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+        background: var(--bg-2);
+        box-shadow: var(--shadow-glow);
+      }
+      input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
+      input[type="search"] {
+        background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="%238a8b94" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>');
+        background-repeat: no-repeat;
+        background-position: 9px center;
+        padding-left: 30px;
+      }
+
+      /* ---------------- Buttons ---------------- */
+      .btn {
+        padding: 9px 14px;
+        border: 0;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+        font-size: 12.5px;
+        background: var(--bg-3);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        transition: background var(--t-fast), transform var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+        display: inline-flex; align-items: center; gap: 6px;
+        line-height: 1;
+      }
+      .btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+      .btn:active { transform: translateY(1px); }
+      .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+      .btn.primary {
+        background: linear-gradient(180deg, var(--accent), var(--accent-2));
+        color: var(--accent-fg);
+        border-color: var(--accent-2);
+        box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, var(--shadow-yellow);
+      }
+      .btn.primary:hover {
+        background: linear-gradient(180deg, #ffff45, var(--accent));
+        box-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 4px 20px rgba(255, 252, 0, 0.4);
+      }
+      .btn.danger {
+        background: linear-gradient(180deg, #ff5b78, #e93757);
+        color: #fff;
+        border-color: #d63752;
+      }
+      .btn.danger:hover { filter: brightness(1.1); }
+      .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+      .btn.ghost:hover { background: var(--bg-2); color: var(--fg-2); }
+      .btn.tiny { padding: 4px 9px; font-size: 11px; font-weight: 600; }
+      .btn.flex { flex: 1; justify-content: center; }
+
+      .row { display: flex; gap: 8px; align-items: center; }
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+      /* ---------------- Friend list cards ---------------- */
+      .friend-pool, .friends-list, .configs-list, .log {
+        background: var(--bg-1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 4px;
+        box-shadow: var(--shadow-sm);
+      }
+      .friend-pool, .friends-list { max-height: 300px; overflow: auto; }
+      .configs-list { max-height: 200px; overflow: auto; padding: 6px; }
+
+      /* ---------------- Items / friend rows ---------------- */
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 7px 10px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        transition: background var(--t-fast);
+        position: relative;
+      }
+      .item:hover { background: var(--bg-3); }
+      .item input[type="checkbox"] {
+        width: 16px; height: 16px;
+        accent-color: var(--accent);
+        flex-shrink: 0;
+        cursor: pointer;
+      }
+      .item .avatar {
+        width: 36px; height: 36px;
+        border-radius: 50%;
+        color: var(--accent-fg);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 800;
+        flex-shrink: 0;
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 0 0 2px var(--bg-1), inset 0 0 0 1px rgba(255,255,255,0.05);
+      }
+      .item .avatar.bestfriend {
+        box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px var(--accent), inset 0 0 0 1px rgba(255,255,255,0.05);
+      }
+      .item .name {
+        flex: 1; min-width: 0;
+        display: flex; flex-direction: column;
+        gap: 2px;
+      }
+      .item .name span {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .item .name span:first-child {
+        font-weight: 600; color: var(--fg); font-size: 13px;
+      }
+      .item .name span:last-child:not(:first-child) {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .item .x {
+        color: var(--muted);
+        font-size: 14px;
+        opacity: 0;
+        transition: opacity var(--t-fast), color var(--t-fast);
+        cursor: pointer;
+        padding: 4px 6px;
+        border-radius: 4px;
+      }
+      .item:hover .x { opacity: 1; }
+      .item .x:hover { color: var(--danger); background: rgba(255, 77, 109, 0.12); }
+
+      /* ---------------- Section headers (sticky, Snapchat-feel) ---------------- */
+      .section-header {
+        position: sticky; top: 0; z-index: 1;
+        background: linear-gradient(180deg, var(--bg-1) 80%, transparent);
+        padding: 10px 12px 6px;
+        color: var(--accent);
+        font-weight: 800; font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        display: flex; align-items: center; gap: 8px;
+        backdrop-filter: blur(8px);
+      }
+      .section-header > span:first-child {
+        display: inline-flex; align-items: center; gap: 6px;
+      }
+      .section-header > span:first-child::before {
+        content: ""; width: 4px; height: 4px;
+        background: var(--accent);
+        border-radius: 50%;
+        box-shadow: 0 0 6px var(--accent);
+      }
+      .section-header .section-toggle {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 9.5px;
+        text-decoration: none;
+        font-weight: 700;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: var(--bg-3);
+        transition: var(--t-fast);
+      }
+      .section-header .section-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+
+      /* ---------------- Activity log ---------------- */
+      .log {
+        margin-top: 6px;
+        max-height: 170px;
+        overflow: auto;
+        padding: 10px 12px;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 10.5px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        color: var(--fg-2);
+      }
+
+      /* ---------------- Misc ---------------- */
+      small { color: var(--muted); font-size: 11px; }
+      .meta-row {
+        display: flex; align-items: center; gap: 8px;
+        margin-top: 10px;
+      }
+      .meta-row .grow { flex: 1; }
+      .empty {
+        padding: 22px 10px;
+        text-align: center;
+        color: var(--muted);
+        font-size: 11.5px;
+      }
+      .config-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 9px 11px;
+        border-radius: var(--radius-sm);
+        cursor: default;
+        transition: background var(--t-fast);
+      }
+      .config-row:hover { background: var(--bg-3); }
+      .config-row .config-name { flex: 1; font-weight: 700; }
+      .config-row .config-count {
+        font-size: 11px; color: var(--accent);
+        background: var(--accent-soft);
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-weight: 700;
+      }
+
+      /* ∞ Unlimited toggle */
+      .unlimited-toggle {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 40px; height: 35px;
+        background: var(--bg-1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        transition: var(--t-fast);
+        flex-shrink: 0;
+        user-select: none;
+      }
+      .unlimited-toggle:hover { border-color: var(--border-strong); background: var(--bg-2); }
+      .unlimited-toggle input { display: none; }
+      .unlimited-toggle span {
+        font-size: 17px; font-weight: 700;
+        color: var(--muted); line-height: 1;
+        transition: var(--t-fast);
+      }
+      .unlimited-toggle:has(input:checked) {
+        background: linear-gradient(180deg, var(--accent), var(--accent-2));
+        border-color: var(--accent-2);
+        box-shadow: var(--shadow-yellow);
+      }
+      .unlimited-toggle:has(input:checked) span { color: var(--accent-fg); }
+
+      /* ---------------- Stats card ---------------- */
+      .stats-card {
+        margin-top: 14px;
+        background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 10px 8px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 4px;
+      }
+      .stats-card .stat {
+        display: flex; flex-direction: column;
+        align-items: center; gap: 2px;
+        padding: 4px 2px;
+        position: relative;
+      }
+      .stats-card .stat + .stat::before {
+        content: ""; position: absolute;
+        left: 0; top: 18%; bottom: 18%;
+        width: 1px; background: var(--border);
+      }
+      .stats-card .stat-num {
+        font-size: 18px; font-weight: 800;
+        color: var(--accent);
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+      }
+      .stats-card .stat-label {
+        font-size: 9.5px; color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 700;
+      }
+
+      /* ---------------- Color picker ---------------- */
+      .color-picker {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .color-swatch {
+        width: 24px; height: 24px;
+        border-radius: 50%;
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: transform var(--t-fast), border-color var(--t-fast);
+        position: relative;
+      }
+      .color-swatch:hover { transform: scale(1.1); }
+      .color-swatch.selected {
+        border-color: var(--fg);
+        box-shadow: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--fg-2);
+      }
+
+      /* Config color dot */
+      .config-color-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.1);
+      }
+
+      /* Footer credit at the very bottom of the popup */
+      .credit {
+        padding: 8px 16px 10px;
+        text-align: center;
+        font-size: 10px;
+        color: var(--muted-2);
+        border-top: 1px solid var(--border);
+        background: linear-gradient(180deg, transparent, rgba(255,252,0,0.025));
+        letter-spacing: 0.04em;
+      }
+      .credit strong {
+        color: var(--accent);
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      /* Streak badge — small flame + count next to a friend's name */
+      .streak-badge {
+        flex-shrink: 0;
+        font-size: 10.5px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: #ffb547;
+        background: rgba(255, 180, 70, 0.12);
+        padding: 1px 6px 1px 4px;
+        border-radius: 999px;
+        line-height: 1.4;
+      }
+
+      /* Friends-tab summary card */
+      .summary-card {
+        background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 12px 14px;
+        margin-bottom: 12px;
+        display: flex; align-items: center; gap: 12px;
+      }
+      .summary-card .icon-circle {
+        width: 36px; height: 36px;
+        border-radius: 10px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        display: flex; align-items: center; justify-content: center;
+        flex-shrink: 0;
+      }
+      .summary-card .summary-text { flex: 1; line-height: 1.35; min-width: 0; }
+      .summary-card .summary-text .h {
+        font-size: 13px; font-weight: 700; color: var(--fg);
+        display: flex; align-items: baseline; gap: 8px;
+      }
+      .summary-card .summary-text .sh {
+        font-size: 11px; color: var(--muted); margin-top: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">
+        <!-- Camera lens / aperture mark -->
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+          <circle cx="12" cy="12" r="4" fill="currentColor"/>
+          <path d="M12 3v3M21 12h-3M12 21v-3M3 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div class="titles">
+        <h1>Auto Snapper</h1>
+        <div class="subtitle">Web Snapchat automation</div>
+      </div>
+      <span id="status-pill" class="pill">idle</span>
+    </header>
+
+    <div id="stale-banner"></div>
+
+    <div class="tabs">
+      <button data-tab="run" class="active">Send</button>
+      <button data-tab="open">Open</button>
+      <button data-tab="configs">Configs</button>
+      <button data-tab="friends">Friends</button>
+    </div>
+
+    <!-- ============================== Run ============================== -->
+    <div class="panel active" data-panel="run">
+      <label class="field-label">Configuration</label>
+      <select id="run-config"></select>
+
+      <div class="grid2" style="margin-top: 12px;">
+        <div>
+          <label class="field-label">Snap count</label>
+          <div class="row" style="gap: 6px;">
+            <input id="run-count" type="number" min="1" value="1" style="flex: 1; min-width: 0;" />
+            <label class="unlimited-toggle" title="Run until you click Stop">
+              <input id="run-unlimited" type="checkbox" />
+              <span>∞</span>
+            </label>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">Max interval (ms)</label>
+          <div class="row" style="gap: 6px;">
+            <input id="run-interval" type="number" min="0" step="100" value="800"
+                   title="Cap on wait between snaps. Exits early when camera is ready." style="flex: 2; min-width: 0;" />
+            <input id="run-jitter" type="number" min="0" max="100" step="5" value="0"
+                   title="Random ± variation in interval (0–100%). Makes pacing look human." style="flex: 1; min-width: 0;" placeholder="0%" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats card -->
+      <div id="stats-card" class="stats-card">
+        <div class="stat">
+          <div class="stat-num" id="stat-today">0</div>
+          <div class="stat-label">Today</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num" id="stat-week">0</div>
+          <div class="stat-label">This week</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num" id="stat-total">0</div>
+          <div class="stat-label">All-time</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num" id="stat-rate">—</div>
+          <div class="stat-label">Success</div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top: 16px;">
+        <button class="btn primary flex" id="btn-start">▶ Start</button>
+        <button class="btn danger flex" id="btn-stop" disabled>■ Stop</button>
+        <button class="btn ghost" id="btn-reset" title="Reset Snapchat tab to home screen (handy after a failed run)">↺</button>
+      </div>
+
+      <div class="meta-row" style="margin-top: 16px;">
+        <label class="field-label" style="margin: 0; flex: 1;">Activity</label>
+        <button class="btn tiny ghost" id="btn-copy-log">Copy</button>
+        <button class="btn tiny ghost" id="btn-clear-log">Clear</button>
+      </div>
+      <div class="log" id="log"></div>
+    </div>
+
+    <!-- ============================== Open (auto-view snaps) ============================== -->
+    <div class="panel" data-panel="open">
+      <p style="margin: 0 0 8px; color: var(--fg-2); font-size: 12px;">
+        Auto-views incoming snaps from selected friends. Walks the home feed for "<strong>New Snap</strong>" / "<strong>View</strong>" indicators.
+      </p>
+
+      <div class="grid2">
+        <div>
+          <label class="field-label">Snap dwell (ms)</label>
+          <input id="open-dwell" type="number" min="500" step="500" value="4000"
+                 title="How long to wait while each snap plays before closing." />
+        </div>
+        <div>
+          <label class="field-label">Section</label>
+          <select id="open-section-filter">
+            <option value="all" selected>All sections</option>
+          </select>
+        </div>
+      </div>
+
+      <label class="field-label">Friends to auto-open from</label>
+      <input id="open-search" type="search" placeholder="Search friends…" autocomplete="off" />
+      <div class="friend-pool" id="open-friend-pool" style="margin-top: 6px;"></div>
+
+      <div class="meta-row">
+        <button class="btn primary flex" id="btn-open-start">▶ Open snaps</button>
+        <button class="btn danger flex" id="btn-open-stop" disabled>■ Stop</button>
+      </div>
+      <small id="open-count" style="display:block; margin-top: 6px;">0 selected</small>
+
+      <div class="meta-row" style="margin-top: 14px;">
+        <label class="field-label" style="margin: 0; flex: 1;">Activity</label>
+        <button class="btn tiny ghost" id="btn-copy-open-log">Copy</button>
+      </div>
+      <div class="log" id="open-log"></div>
+    </div>
+
+    <!-- ============================== Configs ============================== -->
+    <div class="panel" data-panel="configs">
+      <div class="meta-row" style="margin: 0 0 6px;">
+        <label class="field-label" style="margin: 0; flex: 1;">Saved configurations</label>
+        <button class="btn ghost tiny" id="btn-export-configs" title="Download a JSON backup of configs + friends">↓ Export</button>
+        <button class="btn ghost tiny" id="btn-import-configs" title="Restore from a JSON backup">↑ Import</button>
+        <input type="file" id="import-file-input" accept=".json,application/json" style="display:none;" />
+      </div>
+      <div class="configs-list" id="configs-list"></div>
+
+      <label class="field-label">New / edit configuration</label>
+      <small style="display:block; margin-bottom: 6px;">Tip: click a saved config above to edit it.</small>
+      <input id="cfg-name" placeholder="e.g. Close Friends" />
+
+      <label class="field-label">Color</label>
+      <div class="color-picker" id="cfg-color-picker"></div>
+
+      <label class="field-label">Pick recipients</label>
+      <div class="row" style="gap: 6px;">
+        <select id="cfg-section-filter" style="flex: 1;">
+          <option value="all" selected>All sections</option>
+        </select>
+      </div>
+      <input id="cfg-search" type="search" placeholder="Search friends…" autocomplete="off" style="margin-top: 6px;" />
+      <div class="friend-pool" id="cfg-friend-pool" style="margin-top: 6px;"></div>
+
+      <div class="meta-row">
+        <button class="btn primary" id="btn-save-config">Save config</button>
+        <button class="btn ghost tiny" id="btn-cfg-clear">Clear</button>
+        <small id="cfg-count" class="grow" style="text-align: right;">0 selected</small>
+      </div>
+    </div>
+
+    <!-- ============================== Friends ============================== -->
+    <div class="panel" data-panel="friends">
+      <div class="summary-card">
+        <span class="icon-circle">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+        </span>
+        <div class="summary-text">
+          <div class="h">
+            <span id="friends-count">0 friends</span>
+          </div>
+          <div class="sh" id="friends-last-pulled">never pulled</div>
+        </div>
+        <button class="btn primary tiny" id="btn-pull-friends">↻ Pull</button>
+      </div>
+
+      <label class="field-label">Pull method</label>
+      <select id="pull-method">
+        <option value="newchat" selected>New Chat (silent)</option>
+        <option value="camera">Camera + capture (legacy)</option>
+        <option value="manual">Manual (picker already open)</option>
+      </select>
+
+      <label class="field-label">In-page overlay</label>
+      <label class="row" style="gap: 8px; align-items: center; cursor: pointer; padding: 4px 0;">
+        <input id="overlay-visible" type="checkbox" style="width:auto; cursor: pointer;" />
+        <span style="font-size: 12px; color: var(--fg-2); flex: 1;">Show floating control panel on web.snapchat.com</span>
+      </label>
+      <small style="display: block; margin-top: 2px;">Drag the panel to reposition. Click ✕ to hide.</small>
+
+      <label class="field-label">Auto-refresh</label>
+      <select id="auto-refresh-hours">
+        <option value="0">Disabled</option>
+        <option value="6">Every 6h on popup open</option>
+        <option value="12">Every 12h</option>
+        <option value="24" selected>Every 24h</option>
+        <option value="72">Every 3 days</option>
+        <option value="168">Every week</option>
+      </select>
+
+      <label class="field-label">Friend pool</label>
+      <div class="row" style="gap: 6px;">
+        <select id="friends-section-filter" style="flex: 1;">
+          <option value="all" selected>All sections</option>
+        </select>
+      </div>
+      <input id="friends-search" type="search" placeholder="Search friends…" autocomplete="off" style="margin-top: 6px;" />
+      <div class="friends-list" id="friends-list" style="margin-top: 6px;"></div>
+    </div>
+
+    <footer class="credit">
+      Auto Snapper · v1.0.0 · by <strong>Bryce Joseph</strong>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
