@@ -1700,14 +1700,12 @@
   }
 
   // Auto-open ALL pending snaps from `name`. Flow:
-  //   1. Scroll the friends sidebar so target + row-above are visually on screen.
-  //   2. Click the row above so target stays unselected (its in-row View icon
-  //      stays clickable).
-  //   3. Click the View icon ONCE — snap viewer opens, first snap plays.
-  //   4. LOOP: wait snapDwellMs, then left-click on the snap viewer to advance
-  //      to the next snap. Snapchat auto-closes the viewer after the last
-  //      snap finishes / is clicked through, so we exit when the close X
-  //      (button.h9IpV) disappears.
+  //   1. Scroll the friends sidebar so the target's row is visually on screen.
+  //   2. Click the View icon (in the target's row) once — snap viewer opens,
+  //      first snap plays.
+  //   3. LOOP: wait snapDwellMs, then left-click the snap viewer container
+  //      to advance to the next snap. Snapchat auto-closes the viewer when
+  //      the chain runs out, so we exit when button.h9IpV disappears.
   async function openSnapFromFriend(name, { snapDwellMs = 4000 } = {}) {
     if (state.stop) throw new Error("stopped");
     log(`  ${name}: starting`);
@@ -1717,18 +1715,6 @@
     if (!inView) {
       log(`  ${name}: not found in friends sidebar (scrolled the whole list)`);
       return "no-new-snap";
-    }
-    if (state.stop) throw new Error("stopped");
-
-    // Park on row above.
-    const filler = findFillerChatRow(name);
-    if (filler) {
-      const fillerName = (filler.textContent || "").trim().slice(0, 30);
-      log(`  ${name}: parking on row above ("${fillerName}…")`);
-      await realClick(filler);
-      await sleep(350);
-    } else {
-      log(`  ${name}: no row above; proceeding without parking`);
     }
     if (state.stop) throw new Error("stopped");
 
