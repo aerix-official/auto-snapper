@@ -1709,19 +1709,12 @@
     if (state.stop) throw new Error("stopped");
 
     // Step 2: loop — open each View icon as long as one exists in the target
-    // row. Polls for ~1.2s before declaring "no more snaps" so a transient
-    // re-render between snaps doesn't cause an early exit. Loop exits
-    // naturally when there are no more pending snaps; the wall-clock cap
-    // below is a paranoia backstop, not a hard limit on how many you can view.
+    // row. The only exits are: user clicks Stop, or waitForViewIconOnTargetRow
+    // polls for 1.2s without finding a View icon (= no more pending snaps).
+    // No artificial count or time cap — we drain as many as you have.
     let opened = 0;
-    const HARD_TIMEOUT_MS = 15 * 60 * 1000; // 15 min — anyone with more snaps than fit in 15 minutes can re-run
-    const startedAt = Date.now();
     while (true) {
       if (state.stop) throw new Error("stopped");
-      if (Date.now() - startedAt > HARD_TIMEOUT_MS) {
-        log(`  ${name}: hit 15-minute safety cap after ${opened} snap(s) — bailing to keep things sane`);
-        break;
-      }
 
       const found = await waitForViewIconOnTargetRow(name, 1200);
       if (!found) {
