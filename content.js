@@ -1485,30 +1485,47 @@
   }
 
   // Scroll the friends sidebar until BOTH the target row AND the row above
-  // it are mounted in the DOM. Snapchat's sidebar is a ReactVirtualized list
-  // — rows scrolled out of view literally don't exist as DOM nodes, so we
-  // can't read their text or click them until they're rendered.
-  // Returns true if we end with the target visible, false otherwise.
+  // it are mounted in the DOM AND fully on-screen (within the feed's
+  // bounding rect — not just mounted as an overscan buffer row).
+  // ReactVirtualized often mounts items slightly past the viewport for
+  // smoothness, so we have to verify the row's geometry, not just its
+  // existence. Returns true if we end with both rows visually on screen.
   async function scrollFeedToTarget(name) {
     const feed = document.querySelector('div.QAr02[role="list"]');
     if (!feed) return false;
     const lc = (name || "").trim().toLowerCase();
 
+    const isOnScreen = (el) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const f = feed.getBoundingClientRect();
+      // Fully within the feed's vertical extent (small fudge for sub-pixels).
+      return r.top >= f.top - 1 && r.bottom <= f.bottom + 1 && r.height > 0;
+    };
+
     const findTarget = () => {
       const rows = visibleFeedRows();
       for (let i = 0; i < rows.length; i++) {
         if ((rows[i].textContent || "").toLowerCase().includes(lc)) {
-          return { row: rows[i], idx: i, total: rows.length };
+          return { row: rows[i], idx: i, rows };
         }
       }
       return null;
     };
 
-    // Already in view AND has a row above? Done.
-    let hit = findTarget();
-    if (hit && hit.idx > 0) return true;
+    const isReady = (hit) => {
+      if (!hit || !isOnScreen(hit.row)) return false;
+      // Need a row above (we click it to park) AND it must be on screen.
+      if (hit.idx > 0) return isOnScreen(hit.rows[hit.idx - 1]);
+      // Target is at index 0 of mounted rows AND we're at scrollTop 0 — only
+      // case where there's legitimately no row above.
+      return feed.scrollTop <= 1;
+    };
 
-    // Reset to top so the scroll-and-search sweeps the whole list.
+    let hit = findTarget();
+    if (isReady(hit)) return true;
+
+    // Sweep from top to find the target.
     feed.scrollTop = 0;
     feed.dispatchEvent(new Event("scroll", { bubbles: true }));
     await sleep(200);
@@ -1516,28 +1533,39 @@
     let lastTop = -1;
     let stableRounds = 0;
     let iter = 0;
-    while (stableRounds < 3 && iter < 60) {
+    while (stableRounds < 3 && iter < 80) {
       iter++;
       if (state.stop) throw new Error("stopped");
 
       hit = findTarget();
       if (hit) {
-        if (hit.idx > 0) return true; // target + row-above both visible
-        // Target is at the top of the visible window. Scroll up a bit so the
-        // row above gets mounted too.
+        if (isReady(hit)) return true;
+
+        const r = hit.row.getBoundingClientRect();
+        const f = feed.getBoundingClientRect();
         const before = feed.scrollTop;
-        feed.scrollTop = Math.max(0, feed.scrollTop - 80);
-        feed.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true, cancelable: true }));
+        let nextTop = before;
+
+        if (r.bottom > f.bottom) {
+          // Target extends BELOW the feed — scroll down so it sits in the
+          // upper-middle area, leaving room for at least one row above it.
+          nextTop = before + (r.top - f.top) - r.height - 8;
+        } else if (r.top < f.top) {
+          // Target extends ABOVE the feed — scroll up to reveal it.
+          nextTop = before - (f.top - r.top) - r.height - 8;
+        } else if (hit.idx === 0 || !isOnScreen(hit.rows[hit.idx - 1])) {
+          // Target on screen but the row above isn't — back off a bit.
+          nextTop = before - r.height - 8;
+        }
+
+        feed.scrollTop = Math.max(0, Math.min(feed.scrollHeight, nextTop));
+        feed.dispatchEvent(new WheelEvent("wheel", { deltaY: nextTop - before, bubbles: true, cancelable: true }));
         feed.dispatchEvent(new Event("scroll", { bubbles: true }));
         await sleep(180);
-        if (feed.scrollTop === before && feed.scrollTop === 0) {
-          // Already at top of feed — there literally is no row above.
-          return true;
-        }
         continue;
       }
 
-      // Not found yet — scroll one viewport-ish down.
+      // Not found — scroll one viewport-ish down.
       const before = feed.scrollTop;
       const step = Math.max(120, feed.clientHeight * 0.6);
       feed.scrollTop = Math.min(feed.scrollHeight, before + step);
@@ -1553,7 +1581,32 @@
       lastTop = feed.scrollTop;
     }
 
-    return !!findTarget();
+    hit = findTarget();
+    return isReady(hit);
+  }
+
+  // Poll the target row for a View icon. Used between snaps to handle the
+  // brief re-render where the row's content updates after a snap is consumed
+  // — without this, the loop sometimes exits early on a transient empty state.
+  async function waitForViewIconOnTargetRow(name, timeoutMs = 1200) {
+    const start = Date.now();
+    let scrolledRecently = false;
+    while (Date.now() - start < timeoutMs) {
+      if (state.stop) throw new Error("stopped");
+      let row = findChatRowForFriend(name, { mustBeUnread: false });
+      if (!row && !scrolledRecently) {
+        // Row went out of mounted area — re-scroll once.
+        await scrollFeedToTarget(name).catch(() => {});
+        scrolledRecently = true;
+        row = findChatRowForFriend(name, { mustBeUnread: false });
+      }
+      if (row) {
+        const icon = findViewIconInRow(row);
+        if (icon) return { row, icon };
+      }
+      await sleep(70);
+    }
+    return null;
   }
 
   // Find the small 16x16 "view" icon WITHIN a specific sidebar chat row.
@@ -1655,32 +1708,23 @@
     }
     if (state.stop) throw new Error("stopped");
 
-    // Step 2: loop — open each View icon as long as one exists in the target row.
+    // Step 2: loop — open each View icon as long as one exists in the target
+    // row. Polls for ~1.2s before declaring "no more snaps" so a transient
+    // re-render between snaps doesn't cause an early exit.
     let opened = 0;
     const MAX_PER_FRIEND = 30; // safety cap
     while (opened < MAX_PER_FRIEND) {
       if (state.stop) throw new Error("stopped");
 
-      // Re-find the target row each iteration. If it's slipped out of the
-      // virtualized window (e.g. the feed reordered after a snap was viewed),
-      // scroll back to it before giving up.
-      let row = findChatRowForFriend(name, { mustBeUnread: false });
-      if (!row) {
-        const back = await scrollFeedToTarget(name).catch(() => false);
-        if (back) row = findChatRowForFriend(name, { mustBeUnread: false });
-      }
-      if (!row) {
-        log(`  ${name}: target row not found in sidebar after re-scroll`);
-        break;
-      }
-      const viewIcon = findViewIconInRow(row);
-      if (!viewIcon) {
+      const found = await waitForViewIconOnTargetRow(name, 1200);
+      if (!found) {
         if (opened === 0) log(`  ${name}: no View icon — no pending snaps`);
+        else log(`  ${name}: no more View icons after ${opened} snap(s) — done`);
         break;
       }
 
       log(`  ${name}: opening snap #${opened + 1} (clicking View icon in row)`);
-      await realClick(viewIcon);
+      await realClick(found.icon);
       await abortableSleep(snapDwellMs);
 
       const close = findSnapCloseButton();
@@ -1692,7 +1736,8 @@
         document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, which: 27, bubbles: true }));
         document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", keyCode: 27, which: 27, bubbles: true }));
       }
-      await sleep(400);
+      // Brief settle so the next iteration sees the post-close state.
+      await sleep(450);
       opened++;
     }
 
