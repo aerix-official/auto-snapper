@@ -318,6 +318,35 @@
     return false;
   }
 
+  // Single-fire variant of realClick. Identical to realClick BUT does NOT
+  // call el.click() at the end. realClick's native fallback fires the onClick
+  // handler a second time on idempotent UI; for the snap viewer (which
+  // advances on every click), that doubles every click and skips snaps.
+  async function realClickSingle(el, { hold = 0 } = {}) {
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const baseOpts = {
+      bubbles: true, cancelable: true, view: window,
+      clientX: cx, clientY: cy, screenX: cx, screenY: cy,
+      button: 0, buttons: 1,
+    };
+    const ptrOpts = {
+      ...baseOpts,
+      pointerId: 1, pointerType: "mouse", isPrimary: true,
+      pressure: 0.5, width: 1, height: 1,
+    };
+
+    el.dispatchEvent(new PointerEvent("pointerdown", ptrOpts));
+    el.dispatchEvent(new MouseEvent("mousedown", baseOpts));
+    if (hold > 0) await sleep(hold);
+    el.dispatchEvent(new PointerEvent("pointerup", { ...ptrOpts, pressure: 0, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...baseOpts, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("click", baseOpts));
+    // Intentionally no el.click() — exactly one click event.
+  }
+
   // Real-ish click. Dispatches the full pointer + mouse + click sequence so
   // React handlers fire, with optional hold for "press and hold" buttons (the
   // shutter on Snapchat web is "tap = photo, hold = video"). Falls back to the
@@ -1750,37 +1779,41 @@
     return "viewed";
   }
 
-  // Click on the snap-viewer area to advance to the next snap. The viewer
-  // takes up the whole right pane while open. We aim for the center; if it
-  // lands on a UI element we shouldn't click (a button, the close X, an
-  // SVG icon), we fall back to nearby points.
+  // Click the snap-viewer container to advance to the next snap. The
+  // viewer's React onClick lives on `div.BN1L1.evmU8.ngwnc` (confirmed
+  // selector). Clicking that element directly with realClickSingle fires
+  // exactly one click event, which advances by one snap. Without
+  // realClickSingle the trailing native el.click() in realClick would
+  // double-fire and skip every other snap.
   async function clickInSnapViewer() {
+    const selectors = [
+      "div.BN1L1.evmU8.ngwnc",
+      "div.BN1L1.evmU8",
+      "div.BN1L1",
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && isVisible(el)) {
+        await realClickSingle(el);
+        return true;
+      }
+    }
+
+    // Fallback: aim for the center of the chat pane and pick a non-interactive
+    // element via elementFromPoint. Used only if the BN1L1 container isn't
+    // found (Snapchat re-mints those classes occasionally).
     const sidebar = document.querySelector('div.QAr02[role="list"]');
     const sidebarRight = sidebar ? sidebar.getBoundingClientRect().right : 340;
     const cx = Math.floor(sidebarRight + (window.innerWidth - sidebarRight) / 2);
     const cy = Math.floor(window.innerHeight / 2);
-
-    // Try the center, then nearby offsets if the center hits a UI element.
-    const points = [
-      [cx, cy],
-      [cx, cy + 80],
-      [cx, cy - 80],
-      [cx - 60, cy],
-      [cx + 60, cy],
-      [cx, cy + 140],
-    ];
-
-    const isInteractive = (el) => {
-      if (!el) return true;
-      if (el.matches?.('button, [role="button"], a, input, textarea, svg, path')) return true;
-      if (el.closest?.('button, [role="button"]')) return true;
-      return false;
-    };
-
+    const points = [[cx, cy], [cx, cy + 80], [cx, cy - 80], [cx - 60, cy], [cx + 60, cy]];
+    const isInteractive = (el) => !el ||
+      el.matches?.('button, [role="button"], a, input, textarea, svg, path') ||
+      !!el.closest?.('button, [role="button"]');
     for (const [x, y] of points) {
       const target = document.elementFromPoint(x, y);
       if (!target || isInteractive(target)) continue;
-      await realClick(target);
+      await realClickSingle(target);
       return true;
     }
     return false;
