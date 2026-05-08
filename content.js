@@ -1779,16 +1779,21 @@
     return "viewed";
   }
 
-  // Click the snap-viewer container to advance to the next snap. The
-  // viewer's React onClick lives on `div.BN1L1.evmU8.ngwnc` (confirmed
-  // selector). Clicking that element directly with realClickSingle fires
-  // exactly one click event, which advances by one snap. Without
-  // realClickSingle the trailing native el.click() in realClick would
-  // double-fire and skip every other snap.
+  // Click the snap-viewer container to advance to the next snap.
+  // Confirmed selector: div.b2f4R.IbYNR.zsqlD (the outer container, sized
+  // with a 0.5625/1 phone aspect ratio). Inner div bhvQf is the rendering
+  // surface; clicking the outer is preferred because events bubble UP,
+  // and the outer's onClick is the snap-viewer's advance handler.
+  // realClickSingle fires exactly one click event so we don't skip snaps
+  // (realClick's native el.click() trailer would double-fire React's onClick).
   async function clickInSnapViewer() {
     const selectors = [
+      "div.b2f4R.IbYNR.zsqlD",
+      "div.b2f4R.IbYNR",
+      "div.b2f4R",
+      // Older guess from a prior diagnostic — kept as a fallback if
+      // Snapchat re-mints b2f4R.
       "div.BN1L1.evmU8.ngwnc",
-      "div.BN1L1.evmU8",
       "div.BN1L1",
     ];
     for (const sel of selectors) {
@@ -1799,9 +1804,8 @@
       }
     }
 
-    // Fallback: aim for the center of the chat pane and pick a non-interactive
-    // element via elementFromPoint. Used only if the BN1L1 container isn't
-    // found (Snapchat re-mints those classes occasionally).
+    // Last-resort fallback: aim for the center of the chat pane via
+    // elementFromPoint. Used only if none of the class selectors match.
     const sidebar = document.querySelector('div.QAr02[role="list"]');
     const sidebarRight = sidebar ? sidebar.getBoundingClientRect().right : 340;
     const cx = Math.floor(sidebarRight + (window.innerWidth - sidebarRight) / 2);
