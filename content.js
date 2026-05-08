@@ -1671,23 +1671,18 @@
   }
 
   // Auto-open ALL pending snaps from `name`. Flow:
-  //   1. ONCE — click the chat row immediately ABOVE the target so that the
-  //      neighbour's chat opens and the target itself stays unselected.
-  //   2. LOOP:
-  //      a. Find the target's sidebar row.
-  //      b. Find the small View icon (div.HEkDJ.DEp5Z.DClo3.VKjn5) inside it.
-  //      c. If the View icon's gone, the target has no more pending snaps — exit loop.
-  //      d. Click the icon directly. The snap viewer opens.
-  //      e. Wait snapDwellMs for it to play.
-  //      f. Click the X (button.h9IpV) to close.
-  //      g. Loop.
+  //   1. Scroll the friends sidebar so target + row-above are visually on screen.
+  //   2. Click the row above so target stays unselected (its in-row View icon
+  //      stays clickable).
+  //   3. Click the View icon ONCE — snap viewer opens, first snap plays.
+  //   4. LOOP: wait snapDwellMs, then left-click on the snap viewer to advance
+  //      to the next snap. Snapchat auto-closes the viewer after the last
+  //      snap finishes / is clicked through, so we exit when the close X
+  //      (button.h9IpV) disappears.
   async function openSnapFromFriend(name, { snapDwellMs = 4000 } = {}) {
     if (state.stop) throw new Error("stopped");
     log(`  ${name}: starting`);
 
-    // Step 0: scroll the friends sidebar so target + row-above are mounted.
-    // Without this, the virtualized list won't have either row in the DOM
-    // and we'd silently bail or click the wrong row.
     log(`  ${name}: scrolling sidebar to bring target into view`);
     const inView = await scrollFeedToTarget(name);
     if (!inView) {
@@ -1696,7 +1691,7 @@
     }
     if (state.stop) throw new Error("stopped");
 
-    // Step 1: click row ABOVE the target so target is NOT selected.
+    // Park on row above.
     const filler = findFillerChatRow(name);
     if (filler) {
       const fillerName = (filler.textContent || "").trim().slice(0, 30);
@@ -1708,42 +1703,87 @@
     }
     if (state.stop) throw new Error("stopped");
 
-    // Step 2: loop — open each View icon as long as one exists in the target
-    // row. The only exits are: user clicks Stop, or waitForViewIconOnTargetRow
-    // polls for 1.2s without finding a View icon (= no more pending snaps).
-    // No artificial count or time cap — we drain as many as you have.
-    let opened = 0;
+    // Find and click the FIRST View icon — this opens the snap viewer.
+    const found = await waitForViewIconOnTargetRow(name, 1500);
+    if (!found) {
+      log(`  ${name}: no View icon — no pending snaps`);
+      return "no-new-snap";
+    }
+    log(`  ${name}: clicking View icon to open snap viewer`);
+    await realClick(found.icon);
+    await sleep(450);
+
+    // Confirm viewer opened — close X (button.h9IpV) should now exist.
+    if (!findSnapCloseButton()) {
+      log(`  ${name}: snap viewer didn't open (no close X visible)`);
+      return "error";
+    }
+
+    // Click-through loop: wait, click on the snap to advance, repeat.
+    // Exits when the viewer auto-closes (Snapchat dismisses the viewer
+    // after the last snap finishes), or on Stop.
+    let opened = 1;
     while (true) {
       if (state.stop) throw new Error("stopped");
 
-      const found = await waitForViewIconOnTargetRow(name, 1200);
-      if (!found) {
-        if (opened === 0) log(`  ${name}: no View icon — no pending snaps`);
-        else log(`  ${name}: no more View icons after ${opened} snap(s) — done`);
+      // Let the current snap play.
+      await abortableSleep(snapDwellMs);
+
+      // Viewer closed? We're done.
+      if (!findSnapCloseButton()) {
+        log(`  ${name}: viewer closed after ${opened} snap${opened === 1 ? "" : "s"} — done`);
         break;
       }
 
-      log(`  ${name}: opening snap #${opened + 1} (clicking View icon in row)`);
-      await realClick(found.icon);
-      await abortableSleep(snapDwellMs);
-
-      const close = findSnapCloseButton();
-      if (close) {
-        log(`    clicking close (${close.tagName}.${(close.className || "noclass").toString().slice(0, 30)})`);
-        await realClick(close);
-      } else {
-        log(`    no close button found — falling back to Escape`);
-        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, which: 27, bubbles: true }));
-        document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", keyCode: 27, which: 27, bubbles: true }));
+      // Left-click on the snap to advance to the next one.
+      log(`  ${name}: clicking through to snap #${opened + 1}`);
+      const clicked = await clickInSnapViewer();
+      if (!clicked) {
+        log(`  ${name}: couldn't find a safe spot to click in viewer — manually closing`);
+        const close = findSnapCloseButton();
+        if (close) await realClick(close);
+        break;
       }
-      // Brief settle so the next iteration sees the post-close state.
-      await sleep(450);
       opened++;
     }
 
-    if (opened === 0) return "no-new-snap";
-    log(`  ${name}: viewed ${opened} snap${opened === 1 ? "" : "s"}`);
     return "viewed";
+  }
+
+  // Click on the snap-viewer area to advance to the next snap. The viewer
+  // takes up the whole right pane while open. We aim for the center; if it
+  // lands on a UI element we shouldn't click (a button, the close X, an
+  // SVG icon), we fall back to nearby points.
+  async function clickInSnapViewer() {
+    const sidebar = document.querySelector('div.QAr02[role="list"]');
+    const sidebarRight = sidebar ? sidebar.getBoundingClientRect().right : 340;
+    const cx = Math.floor(sidebarRight + (window.innerWidth - sidebarRight) / 2);
+    const cy = Math.floor(window.innerHeight / 2);
+
+    // Try the center, then nearby offsets if the center hits a UI element.
+    const points = [
+      [cx, cy],
+      [cx, cy + 80],
+      [cx, cy - 80],
+      [cx - 60, cy],
+      [cx + 60, cy],
+      [cx, cy + 140],
+    ];
+
+    const isInteractive = (el) => {
+      if (!el) return true;
+      if (el.matches?.('button, [role="button"], a, input, textarea, svg, path')) return true;
+      if (el.closest?.('button, [role="button"]')) return true;
+      return false;
+    };
+
+    for (const [x, y] of points) {
+      const target = document.elementFromPoint(x, y);
+      if (!target || isInteractive(target)) continue;
+      await realClick(target);
+      return true;
+    }
+    return false;
   }
 
   async function openLoop({ users = [], snapDwellMs = 4000 }) {
