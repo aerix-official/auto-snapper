@@ -105,6 +105,35 @@ window.SNAP_SELECTORS = {
     cssSelector: "button.c47Sk",
   },
 
+  // The "Add a caption" button on the photo-preview screen. Clicking it puts a
+  // text caption overlay on the snap.
+  // Confirmed 2026-05-13: <button class="xHw7V T0LP0" title="Add a caption">.
+  // Note: xHw7V is also worn by the photo-preview close X (xHw7V.STlkX), so
+  // we lock on the two-class form. Title is the resilient fallback if
+  // Snapchat re-mints T0LP0.
+  textToolButton: {
+    cssSelector: 'button.xHw7V.T0LP0, button[title="Add a caption"]',
+    ariaLabels: ["Add a caption", "Add Text", "Text", "Caption"],
+    titles: ["Add a caption", "Caption", "Text", "Add text"],
+  },
+
+  // The caption text input that appears after clicking the text tool. Usually
+  // a contenteditable div positioned over the photo. Fallback finders look for
+  // any newly mounted contenteditable / textarea / input inside the photo-
+  // preview pane after clicking textToolButton.
+  captionInput: {
+    cssSelector: null, // e.g. 'div[contenteditable="true"][data-text-input]'
+  },
+
+  // The "next snap" chevron in the snap-viewer overlay. Clicking it advances
+  // to the next snap exactly once — far more reliable than clicking on the
+  // snap container itself, which is subject to focused-window auto-advance
+  // double-counting and other surprises. We prefer this when present.
+  // Confirmed 2026-05-13: <button class="hRnph"> with a right-chevron SVG.
+  snapViewerNextButton: {
+    cssSelector: "button.hRnph",
+  },
+
   // Search input inside the share pane. Distinguished from the home search by
   // having no placeholder. Both share the class `.dmsdi` with role=searchbox.
   recipientSearchInput: {

@@ -1011,6 +1011,16 @@
       await sleep(120);
       if (!isVisible(row)) return false;
 
+      // Sanity log: show exactly which row we matched. If a wrong-person
+      // pick ever happens again, the row's primary text will be visible
+      // here and you can tell at a glance whether it's the right friend.
+      const matchedText = extractNameFromRow(row) || "?";
+      if (matchedText.toLowerCase() !== name.toLowerCase()) {
+        log(`    matched row "${matchedText}" for wanted "${name}" (fuzzy)`);
+      } else {
+        log(`    matched row "${matchedText}"`);
+      }
+
       // Capture pre-click state so we can verify the click actually toggled
       // the row. Snapchat marks selected rows with aria-pressed/aria-selected
       // OR a different class — we just compare a snapshot.
@@ -1152,6 +1162,7 @@
   function findRowByName(picker, name) {
     const rows = collectRecipientRows(picker);
     const wanted = (name || "").trim();
+    if (!wanted) return null;
     const wantedLower = wanted.toLowerCase();
 
     // Strategy 1: exact match on the row's first text candidate.
@@ -1163,24 +1174,40 @@
       const t = extractNameFromRow(r);
       if (t && t.toLowerCase() === wantedLower) return r;
     }
-    // Strategy 3: substring match in either direction across ALL row text
-    // candidates. Handles names that get truncated/suffixed differently
-    // between pickers (e.g. "Huddy D" stored, "Huddy the Diddler" rendered).
+    // Strategy 3 (TIGHTENED): word-boundary prefix match on the row's
+    // PRIMARY text only — handles "Alex" stored vs "Alex S" rendered (or
+    // vice versa). The previous bidirectional substring scan across ALL
+    // text nodes is what caused the "sends to the wrong person" bug:
+    // when someone messaged you, their row's text candidates leaked into
+    // matching, and tiny tokens (short alias, single-word names) would
+    // collide with longer wanted names. Now we require:
+    //   - At least 3-character overlap (no single-letter matches).
+    //   - One name must be a true prefix of the other, followed by a
+    //     non-alphanumeric character (so "Alex" doesn't match "Alexander"
+    //     but does match "Alex S" or "Alex 🎵").
+    const sep = /[^a-zA-Z0-9]/;
     for (const r of rows) {
-      const cands = rowTextCandidates(r);
-      for (const t of cands) {
-        const tl = t.toLowerCase();
-        if (tl === wantedLower) return r;
-        if (tl.includes(wantedLower) || wantedLower.includes(tl)) return r;
+      const primary = extractNameFromRow(r);
+      if (!primary || primary.length < 3) continue;
+      const pl = primary.toLowerCase();
+      if (wantedLower.length < 3) continue;
+      // primary "Alex S" starts with wanted "Alex" + boundary?
+      if (pl.length > wantedLower.length
+          && pl.startsWith(wantedLower)
+          && sep.test(pl[wantedLower.length])) {
+        return r;
+      }
+      // wanted "Alex S" starts with primary "Alex" + boundary?
+      if (wantedLower.length > pl.length
+          && wantedLower.startsWith(pl)
+          && sep.test(wantedLower[pl.length])) {
+        return r;
       }
     }
-    // Strategy 4: ignore-spacing match (sometimes a span boundary inserts
-    // an invisible split that breaks substring matching).
-    const collapsed = wantedLower.replace(/\s+/g, "");
-    for (const r of rows) {
-      const all = (r.textContent || "").toLowerCase().replace(/\s+/g, "");
-      if (all.includes(collapsed) || collapsed.includes(all.slice(0, collapsed.length + 8))) return r;
-    }
+    // Strategy 4 (ignore-spacing match across all text nodes) was REMOVED.
+    // It was the worst offender for cross-recipient false matches because
+    // it would collapse "snapped you · Bob · 2m" into a single string and
+    // happily substring-match against unrelated wanted names.
     return null;
   }
 
@@ -1196,6 +1223,199 @@
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
     setter?.call(el, value);
+  }
+
+  // ---------- caption (text overlay) helpers ----------
+
+  // Find the photo-preview pane (the right column once a snap is captured).
+  // We bound caption-tool searches to this region so we don't accidentally
+  // click sidebar / share-pane buttons.
+  function findPhotoPreviewPane() {
+    // Heuristic: the pane is right of the friends-feed sidebar and contains
+    // the close X (button.xHw7V.STlkX). Walk up from the close button to a
+    // reasonable container.
+    const close = document.querySelector("button.xHw7V.STlkX");
+    if (!close) return null;
+    let cur = close;
+    for (let i = 0; i < 8 && cur; i++) {
+      cur = cur.parentElement;
+      if (!cur) break;
+      const r = cur.getBoundingClientRect();
+      // The pane should be tall, right of sidebar, and at least ~300px wide.
+      if (r.width >= 280 && r.height >= 400) return cur;
+    }
+    return close.parentElement || null;
+  }
+
+  // Locate the caption ("Add a caption") button on the photo preview.
+  // STRICT: only returns on positive identification via pinned selector,
+  // aria-label, or title. The earlier icon-button heuristic was unsafe —
+  // it would match the close X (button.xHw7V.STlkX), and clicking that
+  // dismisses the photo and bounces the loop back to camera. Better to
+  // return null and skip captioning than to ever click the wrong button.
+  //
+  // Also explicitly rejects the close X if it ever sneaks through, as a
+  // defense-in-depth: the close X shares the .xHw7V class with the
+  // caption button (.xHw7V.T0LP0).
+  function findTextToolButton() {
+    const cfg = SEL.textToolButton || {};
+
+    const safe = (el) => {
+      if (!el || !isVisible(el)) return null;
+      // Hard-reject the close X. xHw7V is shared with .STlkX (close) AND
+      // .T0LP0 (caption). If a refactor / re-mint ever lets us match the
+      // close X, we'd accidentally dismiss the snap. Never let that happen.
+      if (el.classList.contains("STlkX")) return null;
+      // Reject the home-screen camera circle just in case.
+      if (el.classList.contains("qJKfS")) return null;
+      // Reject Send To / Download (also in the share pane near the preview).
+      if (el.classList.contains("fGS78") || el.classList.contains("G9yiL")) return null;
+      return el;
+    };
+
+    // 1) Pinned class selector (preferred — fastest, most specific).
+    if (cfg.cssSelector) {
+      const hit = safe(document.querySelector(cfg.cssSelector));
+      if (hit) return hit;
+    }
+
+    // 2) Title attribute — "Add a caption" is the stable user-visible label.
+    if (cfg.titles?.length) {
+      for (const t of cfg.titles) {
+        const hit = safe(document.querySelector(`button[title="${cssEscape(t)}"]`));
+        if (hit) return hit;
+      }
+    }
+
+    // 3) aria-label fallback.
+    if (cfg.ariaLabels?.length) {
+      const hit = safe(queryByAriaLabel(cfg.ariaLabels));
+      if (hit) return hit;
+    }
+
+    return null;
+  }
+
+  // After clicking the text tool, find the input where caption text goes.
+  // Snapchat typically mounts a contenteditable div positioned over the photo.
+  function findCaptionInput() {
+    const cfg = SEL.captionInput || {};
+    if (cfg.cssSelector) {
+      const el = document.querySelector(cfg.cssSelector);
+      if (el && isVisible(el)) return el;
+    }
+    const pane = findPhotoPreviewPane() || document;
+    // Prefer contenteditable, then textarea, then text input.
+    const editable = [...pane.querySelectorAll('[contenteditable="true"]')]
+      .filter((el) => isVisible(el));
+    if (editable.length) return editable[editable.length - 1]; // newest mounted
+
+    const ta = [...pane.querySelectorAll("textarea")].filter((el) => isVisible(el));
+    if (ta.length) return ta[ta.length - 1];
+
+    const txtIn = [...pane.querySelectorAll('input[type="text"], input:not([type])')]
+      .filter((el) => isVisible(el))
+      // Exclude the recipient-search input (lives in the share pane, not preview).
+      .filter((el) => !el.classList.contains("dmsdi"));
+    if (txtIn.length) return txtIn[txtIn.length - 1];
+
+    return null;
+  }
+
+  // Type text into a contenteditable, textarea, or input. For contenteditable
+  // we use execCommand("insertText") so React's onBeforeInput / onInput fire
+  // correctly; for inputs/textareas we use the React-aware native setter.
+  async function typeCaptionInto(el, text) {
+    el.focus();
+    await sleep(50);
+    if (el.isContentEditable) {
+      // Clear any existing content first.
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      try { document.execCommand("delete", false); } catch {}
+      // Insert new content.
+      try { document.execCommand("insertText", false, text); } catch {
+        el.textContent = text;
+      }
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+    } else {
+      setNativeValue(el, text);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await sleep(80);
+  }
+
+  // Best-effort caption application. Picks a random phrase from `pool`, opens
+  // the text tool, types it, and commits. NEVER throws — if anything fails,
+  // logs a warning and returns false so the snap still sends without caption.
+  async function applyRandomCaption(pool) {
+    if (!Array.isArray(pool) || pool.length === 0) return false;
+    const phrase = pool[Math.floor(Math.random() * pool.length)];
+    if (!phrase || !phrase.trim()) return false;
+
+    try {
+      const btn = findTextToolButton();
+      if (!btn) {
+        log(`  caption: text tool not found — skipping (set SNAP_SELECTORS.textToolButton.cssSelector to enable)`);
+        return false;
+      }
+      log(`  caption: clicking text tool, typing "${phrase}"`);
+      await realClick(btn);
+      // Wait for the input to mount.
+      let input = null;
+      const start = Date.now();
+      while (Date.now() - start < 1500) {
+        if (state.stop) throw new Error("stopped");
+        input = findCaptionInput();
+        if (input) break;
+        await sleep(80);
+      }
+      if (!input) {
+        log(`  caption: input never appeared — skipping`);
+        return false;
+      }
+      await typeCaptionInto(input, phrase);
+
+      // Commit. We deliberately do NOT click an arbitrary spot in the preview
+      // pane — the top corners hold the close X and other dismissive buttons
+      // (xHw7V family), and accidentally clicking one drops the captured snap
+      // and bounces the loop back to camera. Instead:
+      //   1. Fire blur directly on the input (commits text in most React
+      //      contentEditable / textarea handlers).
+      //   2. Press Enter — Snapchat's caption widget treats Enter as
+      //      "done" and dismisses the editor without losing the snap.
+      // Both are no-ops if the input has already been auto-committed.
+      try { input.blur(); } catch {}
+      try {
+        const evDown = new KeyboardEvent("keydown", {
+          key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        });
+        const evUp = new KeyboardEvent("keyup", {
+          key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        });
+        (document.activeElement || input).dispatchEvent(evDown);
+        (document.activeElement || input).dispatchEvent(evUp);
+      } catch {}
+      await sleep(140);
+
+      // Sanity check: we must still be on photo preview. If a stray click or
+      // an unexpected keydown handler dismissed the snap, surface it loudly
+      // so the caller can decide whether to recapture or abort, instead of
+      // marching forward into a Send To step that'll fail mysteriously.
+      if (!isOnPhotoPreview()) {
+        log(`  caption: WARNING — photo preview gone after caption step (snap may have been dismissed)`);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      if (e.message === "stopped") throw e;
+      log(`  caption: error — ${e.message} — sending without caption`);
+      return false;
+    }
   }
 
   // The big one. Web Snapchat 2026 flow:
@@ -1220,7 +1440,7 @@
     );
   }
 
-  async function runOneSnap({ recipients, iteration = 0, dwell = 200 }) {
+  async function runOneSnap({ recipients, iteration = 0, dwell = 200, captionPool = null }) {
     // Single robust entry: navigateToCamera handles every starting state —
     // home, camera, photo preview lingering from a previous Send, etc.
     log(iteration === 0 ? "Step 1: navigating to camera" : `Step 1: navigating to camera (iter ${iteration + 1})`);
@@ -1246,6 +1466,23 @@
       }
     );
     if (!captured) throw new Error("Capture failed: photo preview never appeared after rapid clicks");
+
+    // ----- Step 2.5: optional caption -----
+    // Applies a random phrase from captionPool to the snap. Best-effort:
+    // never throws (except on stop) — if the text tool can't be found, the
+    // snap sends without a caption. Helps avoid "identical snap" detection.
+    if (captionPool && captionPool.length) {
+      await applyRandomCaption(captionPool);
+    }
+
+    // After the caption step (or if it was skipped) we MUST still be on the
+    // photo preview — that's the only state where Send To works. If something
+    // dismissed the snap (a misclicked close X, an unexpected keydown), fail
+    // here with a clear message so the loop records a failure and moves on
+    // cleanly instead of timing out waiting for a picker that'll never appear.
+    if (!isOnPhotoPreview()) {
+      throw new Error("photo preview was dismissed before Send To step (likely caption misclick)");
+    }
 
     // ----- Step 3: open recipient picker -----
     log("Step 3: opening recipient picker");
@@ -1644,12 +1881,12 @@
   // chat (the one above) stays selected and the snap viewer pops open.
   function findViewIconInRow(row) {
     if (!row) return null;
-    // Multi-class signature (order-independent in CSS).
-    let el = row.querySelector("div.HEkDJ.DEp5Z.DClo3.VKjn5");
-    if (el && isVisible(el)) return el;
-    // Drop classes one at a time as fallback (in case Snapchat changes one).
-    for (const sel of ["div.HEkDJ.DEp5Z.DClo3", "div.HEkDJ.DEp5Z", "div.HEkDJ"]) {
-      el = row.querySelector(sel);
+    // Require a multi-class signature. Single-class fallbacks (just .HEkDJ)
+    // false-match other row icons (chat / streak), which caused the auto-open
+    // loop to keep "finding" a View icon on rows with no actual pending snap.
+    // Keep only the 4- and 3-class variants — both are specific to View.
+    for (const sel of ["div.HEkDJ.DEp5Z.DClo3.VKjn5", "div.HEkDJ.DEp5Z.DClo3"]) {
+      const el = row.querySelector(sel);
       if (el && isVisible(el)) return el;
     }
     return null;
@@ -1658,6 +1895,10 @@
   // The X / close button that appears while a snap is playing.
   // Confirmed selector: button.h9IpV. Other selectors below are fallbacks
   // for adjacent contexts (camera mode close, photo-preview close).
+  // NOTE: Do NOT use this as "is the snap viewer open?" — the fallbacks
+  // match close buttons from other panes (sidebar, camera, photo preview)
+  // and will keep the click-through loop alive long after the actual snap
+  // viewer has dismissed. Use isSnapViewerOpen() for that check.
   function findSnapCloseButton() {
     const candidates = [
       "button.h9IpV",            // confirmed snap-viewer close X
@@ -1672,6 +1913,40 @@
       if (btn && isVisible(btn)) return btn;
     }
     return null;
+  }
+
+  // Strict "is the snap-playback viewer currently mounted?" check. Used as
+  // the exit gate for the click-through loop. Deliberately rejects close
+  // buttons from neighboring contexts — only signals genuinely owned by
+  // the snap viewer count. Without this, the loop saw a sidebar close
+  // button after the viewer dismissed and concluded the viewer was still
+  // open, spinning forever.
+  function isSnapViewerOpen() {
+    // Primary signal: the snap-viewer-specific close X.
+    if (document.querySelector("button.h9IpV")) return true;
+    // Secondary signal: the snap-viewer container (used by clickInSnapViewer).
+    if (document.querySelector("div.b2f4R")) return true;
+    return false;
+  }
+
+  // Close the snap viewer with strict targeting. Clicks button.h9IpV
+  // directly (NOT the cascading findSnapCloseButton, which could click a
+  // sidebar's close X and leave the viewer up). Falls back to dispatching
+  // Escape, which Snapchat's viewer also responds to.
+  async function closeSnapViewer() {
+    const close = document.querySelector("button.h9IpV");
+    if (close && isVisible(close)) {
+      await realClick(close);
+      return true;
+    }
+    // Escape fallback — Snapchat's snap viewer dismisses on Escape too.
+    document.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true,
+    }));
+    document.dispatchEvent(new KeyboardEvent("keyup", {
+      key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true,
+    }));
+    return false;
   }
 
   // Diagnostic: dump every visible clickable in the chat pane. Used when the
@@ -1734,30 +2009,125 @@
       return "error";
     }
 
-    // Click-through loop: wait, click on the snap to advance, repeat.
-    // Exits when the viewer auto-closes (Snapchat dismisses the viewer
-    // after the last snap finishes), or on Stop.
+    // Click-through loop. Exits when:
+    //   (a) The viewer is no longer open per the STRICT check — Snapchat
+    //       dismissed it naturally on chain-end.
+    //   (b) The viewer signature stops changing after a click — chain end
+    //       but viewer stayed open. Force-close.
+    //   (c) Hard cap on snaps per friend (defensive).
+    //   (d) Wall-clock cap (defensive against runaway dwell loops).
+    //   (e) clickInSnapViewer can't find a safe spot — force-close.
+    //   (f) Stop requested.
+    const MAX_SNAPS_PER_FRIEND = 60;
+    const MAX_LOOP_MS = 6 * 60 * 1000; // 6 minutes — matched to snap cap * worst dwell
+    const loopStartedAt = Date.now();
     let opened = 1;
+    let prevSig = snapViewerSignature();
+    let stuckCycles = 0;
+
     while (true) {
       if (state.stop) throw new Error("stopped");
+
+      // (c) Hard cap on snaps per friend.
+      if (opened >= MAX_SNAPS_PER_FRIEND) {
+        log(`  ${name}: hit per-friend cap (${MAX_SNAPS_PER_FRIEND}) — force-closing`);
+        await closeSnapViewer();
+        break;
+      }
+      // (d) Wall-clock cap — backstop in case dwell is set very high and
+      // something else keeps the viewer technically "open".
+      if (Date.now() - loopStartedAt > MAX_LOOP_MS) {
+        log(`  ${name}: click-through ran ${Math.round((Date.now() - loopStartedAt) / 1000)}s — wall-clock cap, force-closing`);
+        await closeSnapViewer();
+        break;
+      }
+
+      // Snapshot the viewer signature BEFORE dwelling so we can detect
+      // Snapchat's own auto-advance. In a focused window with playable
+      // video, Snapchat ends each snap at its natural duration and calls
+      // its internal advance — independent of our click. If that happens
+      // during our dwell, we MUST NOT also click, or we double-advance and
+      // skip a snap. In a background window video is throttled, so
+      // auto-advance never fires and our click is the only mover.
+      const sigBeforeDwell = snapViewerSignature();
 
       // Let the current snap play.
       await abortableSleep(snapDwellMs);
 
-      // Viewer closed? We're done.
-      if (!findSnapCloseButton()) {
+      // (a) Viewer no longer open? Done. STRICT check — using
+      // findSnapCloseButton here would falsely keep us alive when the
+      // sidebar surfaces a close button after the viewer dismisses.
+      if (!isSnapViewerOpen()) {
         log(`  ${name}: viewer closed after ${opened} snap${opened === 1 ? "" : "s"} — done`);
         break;
       }
 
-      // Left-click on the snap to advance to the next one.
+      // Did Snapchat auto-advance during the dwell? Two-step check:
+      //   1. Did the signature change between dwell start and dwell end?
+      //   2. If yes, did it STABILIZE at the new value? Real advances
+      //      settle quickly (new snap loads, then nothing changes). Loading
+      //      transitions (background tabs especially) keep the signature
+      //      mutating as media elements swap in/out — that's the false
+      //      positive that broke the bad window before. Requiring
+      //      stabilization filters them out.
+      const sigAfterDwell = snapViewerSignature();
+      let autoAdvanced = false;
+      if (sigBeforeDwell && sigAfterDwell && sigBeforeDwell !== sigAfterDwell) {
+        await sleep(250);
+        if (!isSnapViewerOpen()) {
+          log(`  ${name}: viewer closed after ${opened} snap${opened === 1 ? "" : "s"} — done`);
+          break;
+        }
+        const sigSettled = snapViewerSignature();
+        if (sigSettled && sigSettled === sigAfterDwell) {
+          autoAdvanced = true;
+        } else {
+          // Signature didn't settle — it's loading-state churn, not an
+          // actual advance. Fall through to click.
+          log(`  ${name}: sig changed but didn't settle (loading churn) — will click`);
+        }
+      }
+      if (autoAdvanced) {
+        log(`  ${name}: snap #${opened + 1} auto-advanced by Snapchat (no click needed)`);
+        opened++;
+        prevSig = sigAfterDwell;
+        stuckCycles = 0;
+        continue;
+      }
+
+      // No auto-advance — Snapchat is waiting for us. Click to advance.
       log(`  ${name}: clicking through to snap #${opened + 1}`);
       const clicked = await clickInSnapViewer();
       if (!clicked) {
         log(`  ${name}: couldn't find a safe spot to click in viewer — manually closing`);
-        const close = findSnapCloseButton();
-        if (close) await realClick(close);
+        await closeSnapViewer();
         break;
+      }
+
+      // Wait a short beat for the next snap to mount, then check whether the
+      // viewer's content actually changed. If two consecutive clicks didn't
+      // advance the snap (same signature), the chain has ended but Snapchat
+      // is keeping the viewer open — force-close instead of looping forever.
+      await sleep(180);
+
+      // The click might have actually closed the viewer (last snap auto-dismiss).
+      // Re-check before bothering with the signature comparison.
+      if (!isSnapViewerOpen()) {
+        log(`  ${name}: viewer closed after ${opened} snap${opened === 1 ? "" : "s"} (post-click) — done`);
+        break;
+      }
+
+      const nowSig = snapViewerSignature();
+      if (nowSig && prevSig && nowSig === prevSig) {
+        stuckCycles++;
+        if (stuckCycles >= 2) {
+          log(`  ${name}: viewer didn't advance after ${stuckCycles + 1} click(s) — end of chain, force-closing`);
+          await closeSnapViewer();
+          break;
+        }
+      } else {
+        stuckCycles = 0;
+        prevSig = nowSig;
       }
       opened++;
     }
@@ -1765,24 +2135,72 @@
     return "viewed";
   }
 
-  // Click the snap-viewer container to advance to the next snap.
-  // Confirmed selector: div.b2f4R.IbYNR.zsqlD (the outer container, sized
-  // with a 0.5625/1 phone aspect ratio). Inner div bhvQf is the rendering
-  // surface; clicking the outer is preferred because events bubble UP,
-  // and the outer's onClick is the snap-viewer's advance handler.
-  // realClickSingle fires exactly one click event so we don't skip snaps
-  // (realClick's native el.click() trailer would double-fire React's onClick).
+  // Per-snap signature used by the click-through loop to detect "stuck on
+  // last snap" (Snapchat sometimes keeps the viewer open instead of auto-
+  // closing). Combines media src (changes every snap) with the close-X
+  // position. Returns null if the viewer isn't visible.
+  function snapViewerSignature() {
+    if (!isSnapViewerOpen()) return null;
+    // Prefer the snap-viewer container as the search root; fall back to the
+    // close button's ancestor chain if the container's class re-minted.
+    const container = document.querySelector("div.b2f4R") || document.querySelector("button.h9IpV");
+    let root = container;
+    if (root && root.tagName === "BUTTON") {
+      for (let i = 0; i < 6 && root; i++) root = root.parentElement;
+    }
+    root = root || document;
+    const media = root.querySelectorAll("img, video, [style*='background-image']");
+    const srcs = [...media].slice(0, 3).map((el) => {
+      if (el.tagName === "IMG" || el.tagName === "VIDEO") {
+        return (el.currentSrc || el.src || "").slice(-50);
+      }
+      const bg = el.getAttribute("style") || "";
+      const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+      return m ? m[1].slice(-50) : "";
+    }).join("|");
+    const close = document.querySelector("button.h9IpV");
+    const r = close ? close.getBoundingClientRect() : { x: 0, y: 0 };
+    return `${srcs}::${Math.round(r.x)},${Math.round(r.y)}`;
+  }
+
+  // Advance to the next snap in the viewer.
+  //
+  // Preferred path: a dedicated "next snap" chevron button (button.hRnph) —
+  // clicking a real <button> calls its onClick once, period. This is way
+  // more reliable than clicking the snap container, which has a tap-anywhere
+  // handler that interacts weirdly with focused-window auto-advance and is
+  // the source of every "rapid click" / "skips snaps" symptom we've hit.
+  //
+  // Fallback 1: the snap-viewer container (div.b2f4R...). Kept because the
+  // next button might not be mounted in every viewer state (e.g. last snap,
+  // story playback).
+  //
+  // Fallback 2: elementFromPoint near viewer center.
+  //
+  // realClickSingle is used throughout — exactly one click event, no
+  // doubled native el.click() trailer.
   async function clickInSnapViewer() {
-    const selectors = [
+    // Preferred: dedicated next-snap button.
+    const nextBtnSel = SEL.snapViewerNextButton?.cssSelector;
+    if (nextBtnSel) {
+      const btn = document.querySelector(nextBtnSel);
+      if (btn && isVisible(btn)) {
+        await realClickSingle(btn);
+        return true;
+      }
+    }
+
+    // Fallback 1: snap-viewer container click.
+    const containerSelectors = [
       "div.b2f4R.IbYNR.zsqlD",
       "div.b2f4R.IbYNR",
       "div.b2f4R",
-      // Older guess from a prior diagnostic — kept as a fallback if
-      // Snapchat re-mints b2f4R.
+      // Older guess from a prior diagnostic — kept in case Snapchat
+      // re-mints b2f4R.
       "div.BN1L1.evmU8.ngwnc",
       "div.BN1L1",
     ];
-    for (const sel of selectors) {
+    for (const sel of containerSelectors) {
       const el = document.querySelector(sel);
       if (el && isVisible(el)) {
         await realClickSingle(el);
@@ -1790,8 +2208,7 @@
       }
     }
 
-    // Last-resort fallback: aim for the center of the chat pane via
-    // elementFromPoint. Used only if none of the class selectors match.
+    // Fallback 2: aim for the center of the chat pane via elementFromPoint.
     const sidebar = document.querySelector('div.QAr02[role="list"]');
     const sidebarRight = sidebar ? sidebar.getBoundingClientRect().right : 340;
     const cx = Math.floor(sidebarRight + (window.innerWidth - sidebarRight) / 2);
@@ -1809,36 +2226,222 @@
     return false;
   }
 
-  async function openLoop({ users = [], snapDwellMs = 4000 }) {
+  // Inner open pass — walks the user list once, opening any pending snaps.
+  // Does NOT touch state.running or send loop-ended, so it's safe to call
+  // from inside runLoop (interleaved opens) without breaking the send-loop
+  // lifecycle. Returns { viewed, skipped, errored } so callers can log.
+  async function runOpenPass({ users = [], snapDwellMs = 4000, label = "Auto-open" }) {
     let viewed = 0, skipped = 0, errored = 0;
-    log(`Auto-open: starting (${users.length} friend(s))`);
-    try {
-      for (const name of users) {
-        if (state.stop) {
-          log("Auto-open: stop requested.");
-          break;
-        }
-        try {
-          const result = await openSnapFromFriend(name, { snapDwellMs });
-          if (result === "viewed") viewed++;
-          else if (result === "no-new-snap") skipped++;
-        } catch (e) {
-          if (e.message === "stopped") break;
-          log(`  ${name}: error — ${e.message}`);
-          errored++;
-        }
-        await abortableSleep(400);
+    log(`${label}: walking ${users.length} friend(s)`);
+    for (const name of users) {
+      if (state.stop) {
+        log(`${label}: stop requested.`);
+        break;
       }
+      try {
+        const result = await openSnapFromFriend(name, { snapDwellMs });
+        if (result === "viewed") viewed++;
+        else if (result === "no-new-snap") skipped++;
+      } catch (e) {
+        if (e.message === "stopped") throw e;
+        log(`  ${name}: error — ${e.message}`);
+        errored++;
+      }
+      await abortableSleep(400);
+    }
+    log(`${label}: ${viewed} viewed, ${skipped} skipped (no new snap), ${errored} error(s).`);
+    return { viewed, skipped, errored };
+  }
+
+  // Top-level open loop — owns the state.running lifecycle. Called from the
+  // popup's "Open snaps" button. For interleaved opens inside runLoop, use
+  // runOpenPass instead.
+  async function openLoop({ users = [], snapDwellMs = 4000 }) {
+    try {
+      await runOpenPass({ users, snapDwellMs, label: "Auto-open" });
+    } catch (e) {
+      if (e.message !== "stopped") log(`Auto-open: error — ${e.message}`);
     } finally {
-      log(`Auto-open done: ${viewed} viewed, ${skipped} skipped (no new snap), ${errored} error(s).`);
       state.running = false;
       state.stop = false;
       try { chrome.runtime.sendMessage({ type: "loop-ended" }); } catch {}
     }
   }
 
-  async function runLoop({ recipients, count = 1, intervalMs = 4000, unlimited = false, jitterPct = 0 }) {
+  // Poll the friends sidebar for a View icon on `friendName`'s row. Returns
+  // true as soon as one appears, false after `timeoutMs`. Re-scrolls every
+  // few seconds so the row stays mounted even on long waits — Snapchat
+  // virtualizes the sidebar and rows can unmount when scrolled out.
+  async function waitForIncomingSnap(friendName, timeoutMs) {
+    const start = Date.now();
+    let lastScroll = 0;
+    let nextLogTickAt = 10;
+    while (Date.now() - start < timeoutMs) {
+      if (state.stop) throw new Error("stopped");
+
+      // Re-scroll periodically so the target row remains in the mounted area.
+      // The sidebar is virtualized and rows go out of the DOM when off-screen.
+      if (Date.now() - lastScroll > 5000) {
+        lastScroll = Date.now();
+        try { await scrollFeedToTarget(friendName); } catch (e) {
+          if (e.message === "stopped") throw e;
+        }
+      }
+
+      // Check for the View icon.
+      const row = findChatRowForFriend(friendName, { mustBeUnread: false });
+      if (row) {
+        const icon = findViewIconInRow(row);
+        if (icon) {
+          log(`  detected incoming snap from ${friendName}`);
+          return true;
+        }
+      }
+
+      // Heartbeat every 10s so a long wait is visible in the log.
+      const elapsed = Math.round((Date.now() - start) / 1000);
+      if (elapsed >= nextLogTickAt) {
+        log(`  waited ${elapsed}s for incoming snap from ${friendName}…`);
+        nextLogTickAt += 10;
+      }
+
+      await abortableSleep(1000);
+    }
+    return false;
+  }
+
+  // Ping-pong mode: send one snap → wait for the partner to send one back →
+  // open it → repeat. Designed for the two-account side-by-side setup where
+  // each window mirrors the other. Uses the first recipient as the partner;
+  // any additional recipients in the config are ignored.
+  //
+  // Settings:
+  //   recipients     — same shape as runLoop (objects with primary+candidates)
+  //   captionPool    — optional, applied to each outgoing snap
+  //   snapDwellMs    — dwell when opening incoming snaps
+  //   waitTimeoutMs  — how long to wait for an incoming snap before giving
+  //                    up and sending another (keeps the loop unblocked if
+  //                    the partner crashes / pauses)
+  async function runPingPongLoop({
+    recipients,
+    captionPool = null,
+    snapDwellMs = 4000,
+    waitTimeoutMs = 60000,
+  }) {
+    if (!recipients || recipients.length === 0) {
+      log("Ping-pong: no recipient configured");
+      return;
+    }
+    const first = recipients[0];
+    const partner = typeof first === "string"
+      ? first
+      : (first.primary || first.candidates?.[0]);
+    if (!partner) {
+      log("Ping-pong: couldn't determine partner name from recipient");
+      return;
+    }
+    if (recipients.length > 1) {
+      log(`Ping-pong: config has ${recipients.length} recipient(s); using only "${partner}"`);
+    }
+    log(`Ping-pong: starting — partner "${partner}", wait timeout ${Math.round(waitTimeoutMs / 1000)}s`);
+
+    let cycle = 0;
+    let consecutiveTimeouts = 0;
+    try {
+      while (true) {
+        if (state.stop) {
+          log("Stop requested — exiting ping-pong loop.");
+          break;
+        }
+        cycle++;
+        log(`---- Ping-pong cycle ${cycle} ----`);
+
+        // 1. SEND.
+        log(`Step 1: sending snap to ${partner}`);
+        let sendOk = false;
+        try {
+          await runOneSnap({ recipients: [first], iteration: cycle - 1, captionPool });
+          sendOk = true;
+        } catch (e) {
+          if (e.message === "stopped") break;
+          log(`Send failed: ${e.message}`);
+        }
+        await recordSnapStat(sendOk);
+        if (state.stop) break;
+
+        // 2. RETURN HOME so the sidebar / View icon is visible.
+        try { await ensureHomeScreen(); } catch (e) {
+          if (e.message === "stopped") break;
+          log(`return-to-home failed: ${e.message}; continuing`);
+        }
+        if (state.stop) break;
+
+        // 3. WAIT for the partner's snap.
+        const received = await waitForIncomingSnap(partner, waitTimeoutMs);
+        if (state.stop) break;
+
+        if (!received) {
+          consecutiveTimeouts++;
+          log(`No snap from ${partner} within timeout (consecutive: ${consecutiveTimeouts}) — sending another`);
+          // After several no-reply cycles, partner is probably offline. We
+          // could bail here, but the safer default is to keep going; the
+          // user can hit Stop. Just surface it loudly.
+          if (consecutiveTimeouts === 3) {
+            log(`Heads up: 3 timeouts in a row from "${partner}". Check the other window is running.`);
+          }
+          continue;
+        }
+        consecutiveTimeouts = 0;
+
+        // 4. OPEN the snap(s).
+        log(`Step 4: opening snap(s) from ${partner}`);
+        try {
+          const result = await openSnapFromFriend(partner, { snapDwellMs });
+          log(`Open result: ${result}`);
+        } catch (e) {
+          if (e.message === "stopped") break;
+          log(`Open failed: ${e.message}`);
+        }
+
+        // 5. RETURN HOME so the next send starts from a known state.
+        try { await ensureHomeScreen(); } catch (e) {
+          if (e.message === "stopped") break;
+        }
+      }
+    } finally {
+      state.running = false;
+      state.stop = false;
+      log("Ping-pong loop ended.");
+      try { chrome.runtime.sendMessage({ type: "loop-ended" }); } catch {}
+    }
+  }
+
+  async function runLoop({
+    recipients,
+    count = 1,
+    intervalMs = 4000,
+    unlimited = false,
+    jitterPct = 0,
+    captionPool = null,
+    interleaveOpens = null, // { everyN, snapDwellMs, users? } | null
+  }) {
     let i = 0;
+    let sentSinceOpen = 0;
+    // Backoff: when an open pass returns 0 viewed (friend hasn't sent
+    // anything back yet), we don't want to burn ~1.5s on every interleave
+    // window thereafter. Skip the next N interleaves, where N grows with
+    // each consecutive empty pass (1, 2, 3, capped at 4). Reset on the
+    // first non-empty pass.
+    let consecutiveEmptyOpens = 0;
+    let skippedOpens = 0;
+    // Default the open-pass user list to the same names we're sending to —
+    // typical use case is A↔B (send to & open from the same alt). Caller can
+    // override via interleaveOpens.users if they want a different set.
+    const openUsers = interleaveOpens?.users?.length
+      ? interleaveOpens.users
+      : (recipients || []).map((r) =>
+          typeof r === "string" ? r : (r.primary || r.candidates?.[0])
+        ).filter(Boolean);
     try {
       while (unlimited || i < count) {
         if (state.stop) {
@@ -1849,7 +2452,7 @@
         log(`---- Snap ${i + 1} / ${total} ----`);
         let success = false;
         try {
-          await runOneSnap({ recipients, iteration: i });
+          await runOneSnap({ recipients, iteration: i, captionPool });
           success = true;
         } catch (e) {
           if (e.message === "stopped") {
@@ -1861,6 +2464,67 @@
         }
         await recordSnapStat(success);
         i++;
+        sentSinceOpen++;
+
+        // Interleaved open pass: every N successful-or-failed sends, walk
+        // the open list to view any incoming snaps. This makes the account
+        // look like a real two-way user, not a pure emitter. We recover to
+        // the camera before the next iteration so capture works cleanly.
+        const everyN = interleaveOpens?.everyN | 0;
+        if (
+          everyN > 0 &&
+          openUsers.length > 0 &&
+          sentSinceOpen >= everyN &&
+          (unlimited || i < count) &&
+          !state.stop
+        ) {
+          // Backoff: if recent open passes found nothing, skip this one
+          // entirely. The friend hasn't sent anything back yet — no point
+          // re-scanning. Counter decrements each skipped window.
+          if (skippedOpens > 0) {
+            log(`---- Skipping interleave open pass (cooldown, ${skippedOpens} left) ----`);
+            skippedOpens--;
+            sentSinceOpen = 0;
+          } else {
+            log(`---- Interleaved open pass (after ${sentSinceOpen} sends) ----`);
+            let passResult = null;
+            try {
+              passResult = await runOpenPass({
+                users: openUsers,
+                snapDwellMs: interleaveOpens?.snapDwellMs ?? 4000,
+                label: "Interleaved open",
+              });
+            } catch (e) {
+              if (e.message === "stopped") {
+                log("Stopped during interleaved open pass.");
+                break;
+              }
+              log(`Interleaved open pass error: ${e.message}`);
+            }
+            sentSinceOpen = 0;
+
+            // Adjust cooldown based on pass outcome. If the friend sent us
+            // anything (viewed > 0), reset. Otherwise grow the skip window
+            // up to 4, so the longer they stay quiet, the less we check.
+            const viewed = passResult?.viewed | 0;
+            if (viewed === 0) {
+              consecutiveEmptyOpens++;
+              skippedOpens = Math.min(consecutiveEmptyOpens, 4);
+              log(`No new snaps to view; next ${skippedOpens} interleave window(s) will be skipped`);
+            } else {
+              consecutiveEmptyOpens = 0;
+              skippedOpens = 0;
+            }
+
+            // After viewing snaps we're somewhere in the friends sidebar /
+            // chat view — bounce home so the next navigateToCamera is fast.
+            try { await ensureHomeScreen(); } catch (e) {
+              if (e.message === "stopped") break;
+              log(`post-open ensureHomeScreen failed: ${e.message}`);
+            }
+          }
+        }
+
         if (unlimited || i < count) {
           // Apply optional ± jitter so the wait varies snap-to-snap. Helps the
           // pacing look less mechanical; user can dial it 0–100%.
@@ -1980,7 +2644,16 @@
           if (state.running) return sendResponse({ ok: false, error: "Already running" });
           state.running = true;
           state.stop = false;
-          runLoop(msg.payload).catch((e) => log("loop error: " + e.message));
+          if (msg.payload?.pingPong) {
+            runPingPongLoop({
+              recipients: msg.payload.recipients,
+              captionPool: msg.payload.captionPool,
+              snapDwellMs: msg.payload.pingPong.snapDwellMs,
+              waitTimeoutMs: msg.payload.pingPong.waitTimeoutMs,
+            }).catch((e) => log("ping-pong loop error: " + e.message));
+          } else {
+            runLoop(msg.payload).catch((e) => log("loop error: " + e.message));
+          }
           return sendResponse({ ok: true });
         }
 
@@ -2035,7 +2708,16 @@
       if (state.running) return { ok: false, error: "Already running" };
       state.running = true;
       state.stop = false;
-      runLoop(payload).catch((e) => log("loop error: " + e.message));
+      if (payload?.pingPong) {
+        runPingPongLoop({
+          recipients: payload.recipients,
+          captionPool: payload.captionPool,
+          snapDwellMs: payload.pingPong.snapDwellMs,
+          waitTimeoutMs: payload.pingPong.waitTimeoutMs,
+        }).catch((e) => log("ping-pong loop error: " + e.message));
+      } else {
+        runLoop(payload).catch((e) => log("loop error: " + e.message));
+      }
       return { ok: true };
     },
     open(payload) {
@@ -2053,6 +2735,8 @@
   window.__autoSnapper = {
     runOneSnap,
     runLoop,
+    runPingPongLoop,
+    waitForIncomingSnap,
     scrapeRecipients,
     findCameraButton,
     findCaptureButton,

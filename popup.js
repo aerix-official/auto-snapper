@@ -15,7 +15,25 @@ const STORAGE_KEYS = {
   friendsLastPulled: "friendsLastPulled",
   autoRefreshHours: "autoRefreshHours",
   stats: "stats",
+  // Anti-bot mitigation: per-snap caption (random phrase from pool).
+  captionEnabled: "captionEnabled",
+  captionPool: "captionPool",
+  // Anti-bot mitigation: interleave Open passes during a Send loop so the
+  // account looks like a two-way user, not a pure emitter.
+  interleaveOpensEnabled: "interleaveOpensEnabled",
+  interleaveOpensEveryN: "interleaveOpensEveryN",
+  // Ping-pong: send 1, wait for reply, open, repeat. For 2-account
+  // side-by-side runs.
+  pingPongEnabled: "pingPongEnabled",
+  pingPongWaitSeconds: "pingPongWaitSeconds",
 };
+
+// Default caption pool — short, casual phrases. User can edit in the UI.
+const DEFAULT_CAPTION_POOL = [
+  "yo", "hey", "wyd", "sup", "lol", "hii", "vibes", "mood",
+  "fr fr", "ong", "gn", "gm", "🙂", "👀", "💀",
+  "bored", "ok", "literally me", "rn",
+];
 
 // Color palette for per-config theming.
 const CONFIG_COLORS = [
@@ -94,6 +112,14 @@ async function getStore() {
     friendsLastPulled: r.friendsLastPulled || 0,
     autoRefreshHours: r.autoRefreshHours ?? DEFAULT_AUTO_REFRESH_HOURS,
     stats: r.stats || { sentByDay: {}, failedByDay: {}, totalSent: 0, totalFailed: 0 },
+    captionEnabled: r.captionEnabled ?? false,
+    captionPool: Array.isArray(r.captionPool) && r.captionPool.length
+      ? r.captionPool
+      : DEFAULT_CAPTION_POOL.slice(),
+    interleaveOpensEnabled: r.interleaveOpensEnabled ?? false,
+    interleaveOpensEveryN: r.interleaveOpensEveryN ?? 10,
+    pingPongEnabled: r.pingPongEnabled ?? false,
+    pingPongWaitSeconds: r.pingPongWaitSeconds ?? 60,
   };
 }
 
@@ -680,13 +706,39 @@ function setRunningUI(running) {
 }
 
 $("btn-start").addEventListener("click", async () => {
-  const { configs, friendsAliases } = await getStore();
+  const store = await getStore();
+  const { configs, friendsAliases } = store;
   const cfg = configs.find((c) => c.name === $("run-config").value);
   if (!cfg) return alert("Pick a config.");
   const unlimited = $("run-unlimited")?.checked === true;
   const count = unlimited ? 0 : Math.max(1, parseInt($("run-count").value, 10) || 1);
   const intervalMs = Math.max(0, parseInt($("run-interval").value, 10) || 800);
   const jitterPct = Math.max(0, Math.min(100, parseInt($("run-jitter").value, 10) || 0));
+
+  // Anti-detection: random caption + interleaved opens. Read live from the
+  // controls (they're persisted on change, but the user may have edited
+  // since the last popup open).
+  const captionEnabled = $("caption-enabled")?.checked === true;
+  const captionPool = captionEnabled
+    ? $("caption-pool").value.split("\n").map((s) => s.trim()).filter(Boolean)
+    : null;
+  const interleaveEnabled = $("interleave-enabled")?.checked === true;
+  const interleaveEveryN = Math.max(1, Math.min(100, parseInt($("interleave-every")?.value, 10) || 10));
+  const interleaveDwellMs = Math.max(500, parseInt($("open-dwell")?.value, 10) || 4000);
+  const interleaveOpens = interleaveEnabled
+    ? { everyN: interleaveEveryN, snapDwellMs: interleaveDwellMs }
+    : null;
+
+  // Ping-pong mode (2-account side-by-side). When enabled the content
+  // script dispatches to a different loop entirely; count/interval/jitter/
+  // interleave are unused.
+  const pingPongEnabled = $("ping-pong-enabled")?.checked === true;
+  const pingPongWaitMs = Math.max(5000,
+    (parseInt($("ping-pong-wait")?.value, 10) || 60) * 1000);
+  const pingPongDwellMs = Math.max(500, parseInt($("open-dwell")?.value, 10) || 4000);
+  const pingPong = pingPongEnabled
+    ? { waitTimeoutMs: pingPongWaitMs, snapDwellMs: pingPongDwellMs }
+    : null;
 
   // Expand each saved recipient into all of its known name variants — the
   // canonical name plus any aliases scraped from other sections.
@@ -707,7 +759,11 @@ $("btn-start").addEventListener("click", async () => {
   try {
     await send({
       type: "run",
-      payload: { recipients: expandedRecipients, count, intervalMs, unlimited, jitterPct },
+      payload: {
+        recipients: expandedRecipients,
+        count, intervalMs, unlimited, jitterPct,
+        captionPool, interleaveOpens, pingPong,
+      },
     });
   } catch (e) {
     setRunningUI(false);
@@ -892,6 +948,34 @@ $("open-dwell")?.addEventListener("change", async () => {
   await setStore({ autoOpenDwell: val });
 });
 
+// Anti-detection controls — persist on change so settings stick across popup reloads.
+$("caption-enabled")?.addEventListener("change", async () => {
+  await setStore({ captionEnabled: $("caption-enabled").checked });
+});
+$("caption-pool")?.addEventListener("change", async () => {
+  const pool = $("caption-pool").value
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  await setStore({ captionPool: pool });
+});
+$("interleave-enabled")?.addEventListener("change", async () => {
+  await setStore({ interleaveOpensEnabled: $("interleave-enabled").checked });
+});
+$("interleave-every")?.addEventListener("change", async () => {
+  const n = Math.max(1, Math.min(100, parseInt($("interleave-every").value, 10) || 10));
+  $("interleave-every").value = String(n);
+  await setStore({ interleaveOpensEveryN: n });
+});
+$("ping-pong-enabled")?.addEventListener("change", async () => {
+  await setStore({ pingPongEnabled: $("ping-pong-enabled").checked });
+});
+$("ping-pong-wait")?.addEventListener("change", async () => {
+  const n = Math.max(5, Math.min(600, parseInt($("ping-pong-wait").value, 10) || 60));
+  $("ping-pong-wait").value = String(n);
+  await setStore({ pingPongWaitSeconds: n });
+});
+
 $("btn-open-start")?.addEventListener("click", async () => {
   if (openSelection.size === 0) return alert("Pick at least one friend to auto-open from.");
   const snapDwellMs = Math.max(500, parseInt($("open-dwell").value, 10) || 4000);
@@ -1019,6 +1103,14 @@ async function maybeAutoRefresh() {
   // Load auto-open list + dwell from storage into the UI.
   openSelection = new Set(cur.autoOpenList || []);
   if ($("open-dwell")) $("open-dwell").value = String(cur.autoOpenDwell || 4000);
+
+  // Hydrate anti-detection controls on the Send tab.
+  if ($("caption-enabled")) $("caption-enabled").checked = !!cur.captionEnabled;
+  if ($("caption-pool")) $("caption-pool").value = (cur.captionPool || []).join("\n");
+  if ($("interleave-enabled")) $("interleave-enabled").checked = !!cur.interleaveOpensEnabled;
+  if ($("interleave-every")) $("interleave-every").value = String(cur.interleaveOpensEveryN || 10);
+  if ($("ping-pong-enabled")) $("ping-pong-enabled").checked = !!cur.pingPongEnabled;
+  if ($("ping-pong-wait")) $("ping-pong-wait").value = String(cur.pingPongWaitSeconds || 60);
 
   await renderFriends();
   await renderFriendPool();

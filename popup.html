@@ -609,6 +609,42 @@
         </div>
       </div>
 
+      <!-- Anti-detection: random caption per snap -->
+      <label class="field-label" style="margin-top: 14px;">Random caption</label>
+      <label class="row" style="gap: 8px; align-items: center; cursor: pointer; padding: 2px 0;">
+        <input id="caption-enabled" type="checkbox" style="width: auto; cursor: pointer;" />
+        <span style="font-size: 12px; color: var(--fg-2); flex: 1;">Add a random phrase to each snap</span>
+      </label>
+      <small style="display:block; margin: 4px 0 6px;">One phrase per line. Helps avoid identical-snap detection.</small>
+      <textarea id="caption-pool" rows="3" placeholder="yo&#10;wyd&#10;lol&#10;..."
+                style="font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11.5px; line-height: 1.5; resize: vertical; min-height: 60px;"></textarea>
+
+      <!-- Anti-detection: interleave opens during a send loop -->
+      <label class="field-label" style="margin-top: 14px;">Interleave opens</label>
+      <label class="row" style="gap: 8px; align-items: center; cursor: pointer; padding: 2px 0;">
+        <input id="interleave-enabled" type="checkbox" style="width: auto; cursor: pointer;" />
+        <span style="font-size: 12px; color: var(--fg-2); flex: 1;">View incoming snaps mid-loop</span>
+      </label>
+      <small style="display:block; margin: 4px 0 6px;">Every N snaps, open snaps back from the same recipients. Uses the dwell from the Open tab.</small>
+      <div class="row" style="gap: 6px;">
+        <input id="interleave-every" type="number" min="1" max="100" step="1" value="10"
+               title="View incoming snaps every N sends" style="flex: 1; min-width: 0;" />
+        <span style="font-size: 11px; color: var(--muted); white-space: nowrap;">every N sends</span>
+      </div>
+
+      <!-- Ping-pong: send 1, wait, open, repeat -->
+      <label class="field-label" style="margin-top: 14px;">Ping-pong mode</label>
+      <label class="row" style="gap: 8px; align-items: center; cursor: pointer; padding: 2px 0;">
+        <input id="ping-pong-enabled" type="checkbox" style="width: auto; cursor: pointer;" />
+        <span style="font-size: 12px; color: var(--fg-2); flex: 1;">Send 1 → wait for reply → open → repeat</span>
+      </label>
+      <small style="display:block; margin: 4px 0 6px;">For 2-account side-by-side runs. Uses the first recipient as the partner. Overrides count / interval / interleave — runs until you click Stop.</small>
+      <div class="row" style="gap: 6px;">
+        <input id="ping-pong-wait" type="number" min="5" max="600" step="5" value="60"
+               title="Max seconds to wait for the partner's snap before sending another" style="flex: 1; min-width: 0;" />
+        <span style="font-size: 11px; color: var(--muted); white-space: nowrap;">seconds to wait</span>
+      </div>
+
       <!-- Stats card -->
       <div id="stats-card" class="stats-card">
         <div class="stat">

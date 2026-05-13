@@ -156,6 +156,54 @@
       await writeSetting("autoSnapperRunUnlimited", on);
     });
 
+    // ---------- anti-detection / mode toggles ----------
+    // These share keys with the popup so the two UIs stay in sync.
+    async function refreshToggles() {
+      const r = await chrome.storage.local.get([
+        "captionEnabled",
+        "interleaveOpensEnabled",
+        "interleaveOpensEveryN",
+        "pingPongEnabled",
+        "pingPongWaitSeconds",
+      ]);
+      $("#ovl-caption-enabled").checked = !!r.captionEnabled;
+      $("#ovl-interleave-enabled").checked = !!r.interleaveOpensEnabled;
+      $(".interleave-every").value = String(r.interleaveOpensEveryN ?? 10);
+      $("#ovl-pingpong-enabled").checked = !!r.pingPongEnabled;
+      $(".pingpong-wait").value = String(r.pingPongWaitSeconds ?? 60);
+    }
+    refreshToggles();
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local") return;
+      if (
+        changes.captionEnabled ||
+        changes.interleaveOpensEnabled ||
+        changes.interleaveOpensEveryN ||
+        changes.pingPongEnabled ||
+        changes.pingPongWaitSeconds
+      ) refreshToggles();
+    });
+
+    $("#ovl-caption-enabled").addEventListener("change", () =>
+      writeSetting("captionEnabled", $("#ovl-caption-enabled").checked)
+    );
+    $("#ovl-interleave-enabled").addEventListener("change", () =>
+      writeSetting("interleaveOpensEnabled", $("#ovl-interleave-enabled").checked)
+    );
+    $(".interleave-every").addEventListener("change", () => {
+      const n = Math.max(1, Math.min(100, parseInt($(".interleave-every").value, 10) || 10));
+      $(".interleave-every").value = String(n);
+      writeSetting("interleaveOpensEveryN", n);
+    });
+    $("#ovl-pingpong-enabled").addEventListener("change", () =>
+      writeSetting("pingPongEnabled", $("#ovl-pingpong-enabled").checked)
+    );
+    $(".pingpong-wait").addEventListener("change", () => {
+      const n = Math.max(5, Math.min(600, parseInt($(".pingpong-wait").value, 10) || 60));
+      $(".pingpong-wait").value = String(n);
+      writeSetting("pingPongWaitSeconds", n);
+    });
+
     // ---------- mode tabs (Send / Open) ----------
     function switchMode(mode) {
       all(".mode-tab").forEach((t) => t.classList.toggle("active", t.dataset.mode === mode));
@@ -216,13 +264,34 @@
 
     // ---------- start / stop / reset ----------
     $(".start-btn").addEventListener("click", async () => {
-      const r = await chrome.storage.local.get(["configs", "friendsAliases"]);
+      const r = await chrome.storage.local.get([
+        "configs", "friendsAliases",
+        "captionEnabled", "captionPool",
+        "interleaveOpensEnabled", "interleaveOpensEveryN", "autoOpenDwell",
+        "pingPongEnabled", "pingPongWaitSeconds",
+      ]);
       const cfg = (r.configs || []).find((c) => c.name === $(".config-select").value);
       if (!cfg) return;
       const unlimited = $(".unlimited-cb").checked;
       const count = unlimited ? 0 : Math.max(1, parseInt($(".count").value, 10) || 1);
       const intervalMs = Math.max(0, parseInt($(".interval").value, 10) || 800);
       const jitterPct = Math.max(0, Math.min(100, parseInt($(".jitter").value, 10) || 0));
+
+      // Anti-detection settings live in storage (managed by the popup UI).
+      const captionPool = r.captionEnabled && Array.isArray(r.captionPool) && r.captionPool.length
+        ? r.captionPool : null;
+      const interleaveOpens = r.interleaveOpensEnabled
+        ? {
+            everyN: Math.max(1, parseInt(r.interleaveOpensEveryN, 10) || 10),
+            snapDwellMs: Math.max(500, parseInt(r.autoOpenDwell, 10) || 4000),
+          }
+        : null;
+      const pingPong = r.pingPongEnabled
+        ? {
+            waitTimeoutMs: Math.max(5000, (parseInt(r.pingPongWaitSeconds, 10) || 60) * 1000),
+            snapDwellMs: Math.max(500, parseInt(r.autoOpenDwell, 10) || 4000),
+          }
+        : null;
 
       const expandedRecipients = cfg.recipients.map((saved) => {
         let canonical = saved;
@@ -244,7 +313,11 @@
         setRunningUI(false);
         return;
       }
-      api.run({ recipients: expandedRecipients, count, intervalMs, unlimited, jitterPct });
+      api.run({
+        recipients: expandedRecipients,
+        count, intervalMs, unlimited, jitterPct,
+        captionPool, interleaveOpens, pingPong,
+      });
     });
 
     $(".stop-btn").addEventListener("click", () => {
@@ -499,6 +572,49 @@
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .row { display: flex; gap: 6px; }
 
+      /* Anti-detection / mode toggles — compact rows with checkbox + label
+         + optional inline numeric input. Same source-of-truth as the popup
+         (chrome.storage.local), so changes here persist across reloads and
+         show up in both UIs. */
+      .toggle-block {
+        margin-top: 2px;
+        display: flex; flex-direction: column; gap: 5px;
+        padding: 8px 9px;
+        background: rgba(255,255,255,0.025);
+        border: 1px solid rgba(255,255,255,0.05);
+        border-radius: 7px;
+      }
+      .toggle-row {
+        display: flex; align-items: center; gap: 7px;
+        font-size: 11px; color: #cfd0d6;
+        line-height: 1.2;
+      }
+      .toggle-row input[type="checkbox"] {
+        width: 13px; height: 13px;
+        accent-color: #fffc00;
+        margin: 0; flex-shrink: 0; cursor: pointer;
+      }
+      .toggle-row .toggle-label {
+        flex: 1; min-width: 0;
+        cursor: pointer;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .toggle-row input.inline {
+        width: 44px;
+        padding: 3px 5px;
+        font-size: 11px;
+        flex-shrink: 0;
+      }
+      .toggle-row .suffix {
+        font-size: 10px; color: #8a8b94;
+        flex-shrink: 0;
+      }
+      .toggle-note {
+        margin-top: 2px;
+        font-size: 9.5px; color: #6c6d75;
+        line-height: 1.35;
+      }
+
       button.btn {
         flex: 1;
         padding: 7px 10px;
@@ -589,6 +705,27 @@
                 <input class="jitter" type="number" min="0" max="100" step="5" value="0" placeholder="0%" title="± random jitter %" />
               </div>
             </div>
+          </div>
+          <div class="toggle-block">
+            <div class="toggle-row">
+              <input id="ovl-caption-enabled" type="checkbox" />
+              <label class="toggle-label" for="ovl-caption-enabled" title="Add a random phrase from the pool to each snap">Random caption</label>
+            </div>
+            <div class="toggle-row">
+              <input id="ovl-interleave-enabled" type="checkbox" />
+              <label class="toggle-label" for="ovl-interleave-enabled">Interleave opens</label>
+              <span class="suffix">every</span>
+              <input class="inline interleave-every" type="number" min="1" max="100" step="1" value="10" title="Open snaps every N sends" />
+              <span class="suffix">sends</span>
+            </div>
+            <div class="toggle-row">
+              <input id="ovl-pingpong-enabled" type="checkbox" />
+              <label class="toggle-label" for="ovl-pingpong-enabled" title="Send 1 → wait for reply → open → repeat. For 2-account side-by-side runs.">Ping-pong</label>
+              <span class="suffix">wait</span>
+              <input class="inline pingpong-wait" type="number" min="5" max="600" step="5" value="60" title="Max seconds to wait for partner before sending again" />
+              <span class="suffix">s</span>
+            </div>
+            <div class="toggle-note">Caption pool / friends are edited in the toolbar popup. Toggles sync both ways.</div>
           </div>
           <div class="row">
             <button class="btn primary start-btn">▶ Start</button>
